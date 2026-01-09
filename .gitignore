@@ -1,0 +1,36 @@
+# Rust build artifacts
+/target/
+Cargo.lock
+
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local config
+.env
+.env.local
+
+# Agent of Empires data (for development)
+.agent-of-empires/
+
+# VS Code extensions data
+.serena/
+
+# Personal/local files
+.mcp.json
+.playwright-mcp/
+*.screenstudio/

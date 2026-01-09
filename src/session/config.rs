@@ -1,0 +1,176 @@
+//! User configuration management
+
+use anyhow::Result;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::fs;
+use std::path::PathBuf;
+
+use super::get_app_dir;
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Config {
+    #[serde(default = "default_profile")]
+    pub default_profile: String,
+
+    #[serde(default)]
+    pub theme: ThemeConfig,
+
+    #[serde(default)]
+    pub claude: ClaudeConfig,
+
+    #[serde(default)]
+    pub gemini: GeminiConfig,
+
+    #[serde(default)]
+    pub updates: UpdatesConfig,
+
+    #[serde(default)]
+    pub mcp_pool: McpPoolConfig,
+
+    #[serde(default)]
+    pub mcps: HashMap<String, McpConfig>,
+}
+
+fn default_profile() -> String {
+    "default".to_string()
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ThemeConfig {
+    #[serde(default)]
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ClaudeConfig {
+    #[serde(default)]
+    pub config_dir: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct GeminiConfig {
+    #[serde(default)]
+    pub config_dir: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdatesConfig {
+    #[serde(default = "default_true")]
+    pub check_enabled: bool,
+
+    #[serde(default)]
+    pub auto_update: bool,
+
+    #[serde(default = "default_check_interval")]
+    pub check_interval_hours: u64,
+
+    #[serde(default = "default_true")]
+    pub notify_in_cli: bool,
+}
+
+impl Default for UpdatesConfig {
+    fn default() -> Self {
+        Self {
+            check_enabled: true,
+            auto_update: false,
+            check_interval_hours: 24,
+            notify_in_cli: true,
+        }
+    }
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_check_interval() -> u64 {
+    24
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct McpPoolConfig {
+    #[serde(default)]
+    pub enabled: bool,
+
+    #[serde(default)]
+    pub pool_all: bool,
+
+    #[serde(default)]
+    pub exclude_mcps: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct McpConfig {
+    #[serde(default)]
+    pub command: Option<String>,
+
+    #[serde(default)]
+    pub args: Vec<String>,
+
+    #[serde(default)]
+    pub env: HashMap<String, String>,
+
+    #[serde(default)]
+    pub url: Option<String>,
+
+    #[serde(default)]
+    pub transport: Option<String>,
+
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+fn config_path() -> Result<PathBuf> {
+    Ok(get_app_dir()?.join("config.toml"))
+}
+
+pub fn load_config() -> Result<Option<Config>> {
+    let path = config_path()?;
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let content = fs::read_to_string(&path)?;
+    let config: Config = toml::from_str(&content)?;
+    Ok(Some(config))
+}
+
+pub fn save_config(config: &Config) -> Result<()> {
+    let path = config_path()?;
+    let content = toml::to_string_pretty(config)?;
+    fs::write(&path, content)?;
+    Ok(())
+}
+
+pub fn get_update_settings() -> UpdatesConfig {
+    load_config()
+        .ok()
+        .flatten()
+        .map(|c| c.updates)
+        .unwrap_or_default()
+}
+
+pub fn get_claude_config_dir() -> Option<PathBuf> {
+    let config = load_config().ok().flatten()?;
+    config.claude.config_dir.map(|s| {
+        if s.starts_with("~/") {
+            if let Some(home) = dirs::home_dir() {
+                return home.join(&s[2..]);
+            }
+        }
+        PathBuf::from(s)
+    })
+}
+
+pub fn get_gemini_config_dir() -> Option<PathBuf> {
+    let config = load_config().ok().flatten()?;
+    config.gemini.config_dir.map(|s| {
+        if s.starts_with("~/") {
+            if let Some(home) = dirs::home_dir() {
+                return home.join(&s[2..]);
+            }
+        }
+        PathBuf::from(s)
+    })
+}
