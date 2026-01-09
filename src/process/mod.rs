@@ -1,8 +1,4 @@
-//! Process state detection for determining if a process is waiting for input
-//!
-//! This module provides cross-platform detection of whether a process is blocked
-//! waiting for user input on stdin. This is used to determine if a CLI tool
-//! (like Claude Code) is waiting for the user to type something.
+//! Process utilities for tmux session management
 
 use std::process::Command;
 
@@ -11,19 +7,6 @@ mod linux;
 
 #[cfg(target_os = "macos")]
 mod macos;
-
-/// Result of process state detection
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProcessInputState {
-    /// Process is blocked waiting for input on stdin
-    WaitingForInput,
-    /// Process is actively running (not waiting for input)
-    Running,
-    /// Process is sleeping but not on stdin (e.g., network I/O)
-    SleepingOther,
-    /// Could not determine process state
-    Unknown,
-}
 
 /// Get the PID of the shell process running in a tmux pane
 pub fn get_pane_pid(session_name: &str) -> Option<u32> {
@@ -56,41 +39,5 @@ pub fn get_foreground_pid(shell_pid: u32) -> Option<u32> {
     {
         let _ = shell_pid;
         None
-    }
-}
-
-/// Check if a process is waiting for input on stdin
-pub fn is_waiting_for_input(pid: u32) -> ProcessInputState {
-    #[cfg(target_os = "linux")]
-    {
-        linux::is_waiting_for_input(pid)
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        macos::is_waiting_for_input(pid)
-    }
-
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    {
-        let _ = pid;
-        ProcessInputState::Unknown
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_process_input_state_variants() {
-        assert_eq!(
-            ProcessInputState::WaitingForInput,
-            ProcessInputState::WaitingForInput
-        );
-        assert_ne!(
-            ProcessInputState::WaitingForInput,
-            ProcessInputState::Running
-        );
     }
 }

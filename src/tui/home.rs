@@ -371,14 +371,11 @@ impl HomeView {
     fn create_session(&mut self, data: super::dialogs::NewSessionData) -> anyhow::Result<String> {
         let mut instance = Instance::new(&data.title, &data.path);
         instance.group_path = data.group;
-        instance.command = data.command.clone();
-        instance.tool = if data.command.is_empty() || data.command.to_lowercase().contains("claude")
-        {
-            "claude".to_string()
-        } else if data.command.to_lowercase().contains("opencode") {
+        instance.tool = data.tool.clone();
+        instance.command = if data.tool == "opencode" {
             "opencode".to_string()
         } else {
-            "shell".to_string()
+            String::new()
         };
 
         let session_id = instance.id.clone();
@@ -433,14 +430,21 @@ impl HomeView {
     }
 
     pub fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        // Layout: main area + status bar at bottom
+        let main_chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(0), Constraint::Length(1)])
+            .split(area);
+
         // Layout: left panel (list) and right panel (preview)
         let chunks = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(35), Constraint::Percentage(65)])
-            .split(area);
+            .split(main_chunks[0]);
 
         self.render_list(frame, chunks[0], theme);
         self.render_preview(frame, chunks[1], theme);
+        self.render_status_bar(frame, main_chunks[1], theme);
 
         // Render dialogs on top
         if self.show_help {
@@ -589,5 +593,37 @@ impl HomeView {
                 .alignment(Alignment::Center);
             frame.render_widget(hint, inner);
         }
+    }
+
+    fn render_status_bar(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        let key_style = Style::default().fg(theme.accent).bold();
+        let desc_style = Style::default().fg(theme.dimmed);
+        let sep_style = Style::default().fg(theme.border);
+
+        let spans = vec![
+            Span::styled(" j/k", key_style),
+            Span::styled(" Navigate ", desc_style),
+            Span::styled("│", sep_style),
+            Span::styled(" Enter", key_style),
+            Span::styled(" Attach ", desc_style),
+            Span::styled("│", sep_style),
+            Span::styled(" n", key_style),
+            Span::styled(" New ", desc_style),
+            Span::styled("│", sep_style),
+            Span::styled(" d", key_style),
+            Span::styled(" Delete ", desc_style),
+            Span::styled("│", sep_style),
+            Span::styled(" /", key_style),
+            Span::styled(" Search ", desc_style),
+            Span::styled("│", sep_style),
+            Span::styled(" ?", key_style),
+            Span::styled(" Help ", desc_style),
+            Span::styled("│", sep_style),
+            Span::styled(" q", key_style),
+            Span::styled(" Quit", desc_style),
+        ];
+
+        let status = Paragraph::new(Line::from(spans)).style(Style::default().bg(theme.selection));
+        frame.render_widget(status, area);
     }
 }

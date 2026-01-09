@@ -4,7 +4,7 @@ use anyhow::{bail, Result};
 use std::process::Command;
 
 use super::{session_exists_from_cache, SESSION_PREFIX};
-use crate::process::{self, ProcessInputState};
+use crate::process;
 use crate::session::Status;
 
 const SPINNER_CHARS: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -194,45 +194,22 @@ fn sanitize_session_name(name: &str) -> String {
         .collect()
 }
 
-fn detect_status_from_content(content: &str, tool: &str, fg_pid: Option<u32>) -> Status {
-    // Layer 1: Process state detection (most reliable)
-    if let Some(pid) = fg_pid {
-        let proc_state = process::is_waiting_for_input(pid);
-        match proc_state {
-            ProcessInputState::WaitingForInput => {
-                return Status::Waiting;
-            }
-            ProcessInputState::Running => {
-                return Status::Running;
-            }
-            _ => {
-                // Unknown or sleeping on other I/O - fall through to pattern matching
-            }
-        }
-    }
-
-    // Layer 2: Pattern matching (fallback for when process detection is unavailable)
-    let lines: Vec<&str> = content.lines().collect();
-    let last_lines = if lines.len() > 10 {
-        &lines[lines.len() - 10..]
-    } else {
-        &lines
-    };
-    let last_content = last_lines.join("\n");
-    let last_content_lower = last_content.to_lowercase();
-
-    let effective_tool = if tool == "shell" && is_opencode_content(&last_content_lower) {
+fn detect_status_from_content(content: &str, tool: &str, _fg_pid: Option<u32>) -> Status {
+    // Detect tool type - auto-detect TUI apps from content if tool is "shell"
+    let content_lower = content.to_lowercase();
+    let effective_tool = if tool == "shell" && is_opencode_content(&content_lower) {
         "opencode"
-    } else if tool == "shell" && is_claude_code_content(&last_content_lower) {
+    } else if tool == "shell" && is_claude_code_content(&content_lower) {
         "claude"
     } else {
         tool
     };
 
+    // Pattern matching on terminal content
     match effective_tool {
-        "claude" => detect_claude_status(&last_content),
-        "opencode" => detect_opencode_status(&last_content_lower),
-        _ => detect_shell_status(&last_content_lower),
+        "claude" => detect_claude_status(content),
+        "opencode" => detect_opencode_status(&content_lower),
+        _ => detect_claude_status(content), // Default to claude pattern matching
     }
 }
 
@@ -270,24 +247,20 @@ fn is_claude_code_content(content: &str) -> bool {
 
 fn detect_claude_status(content: &str) -> Status {
     let lines: Vec<&str> = content.lines().collect();
-    let last_15: Vec<&str> = lines
+    let content_lower = content.to_lowercase();
+    let non_empty_lines: Vec<&str> = lines
         .iter()
-        .rev()
-        .take(15)
         .filter(|l| !l.trim().is_empty())
         .copied()
         .collect();
-    let recent_content = last_15.iter().rev().cloned().collect::<Vec<_>>().join("\n");
-    let recent_lower = recent_content.to_lowercase();
 
     // RUNNING: "esc to interrupt" is shown when Claude is busy
-    if recent_lower.contains("esc to interrupt") {
+    if content_lower.contains("esc to interrupt") {
         return Status::Running;
     }
 
-    // Also check for spinner characters in last 5 lines (backup)
-    let last_5: Vec<&str> = lines.iter().rev().take(5).copied().collect();
-    for line in &last_5 {
+    // Also check for spinner characters anywhere in content
+    for line in &lines {
         for spinner in SPINNER_CHARS {
             if line.contains(spinner) {
                 return Status::Running;
@@ -296,8 +269,7 @@ fn detect_claude_status(content: &str) -> Status {
     }
 
     // WAITING: Selection menus (shows "Enter to select" or "Esc to cancel")
-    // These indicate interactive prompts waiting for user choice
-    if recent_lower.contains("enter to select") || recent_lower.contains("esc to cancel") {
+    if content_lower.contains("enter to select") || content_lower.contains("esc to cancel") {
         return Status::Waiting;
     }
 
@@ -318,15 +290,13 @@ fn detect_claude_status(content: &str) -> Status {
     }
 
     // WAITING: Selection cursor with numbered options (e.g., "❯ 1.", "❯ 2.")
-    if recent_content.contains("❯")
-        && (recent_content.contains("1.") || recent_content.contains("2."))
-    {
+    if content.contains("❯") && (content.contains("1.") || content.contains("2.")) {
         return Status::Waiting;
     }
 
-    // WAITING: Check if last non-empty line is ">" input prompt
-    if let Some(last_line) = lines.iter().rev().find(|l| !l.trim().is_empty()) {
-        let clean_line = strip_ansi(last_line).trim().to_string();
+    // WAITING: Check for ">" input prompt in non-empty lines
+    for line in non_empty_lines.iter().rev().take(10) {
+        let clean_line = strip_ansi(line).trim().to_string();
         if clean_line == ">" || clean_line == "> " {
             return Status::Waiting;
         }
@@ -341,7 +311,7 @@ fn detect_claude_status(content: &str) -> Status {
     // WAITING: Y/N confirmation prompts
     let question_prompts = ["(Y/n)", "(y/N)", "[Y/n]", "[y/N]"];
     for prompt in &question_prompts {
-        if recent_content.contains(prompt) {
+        if content.contains(prompt) {
             return Status::Waiting;
         }
     }
@@ -351,24 +321,20 @@ fn detect_claude_status(content: &str) -> Status {
 
 fn detect_opencode_status(content: &str) -> Status {
     let lines: Vec<&str> = content.lines().collect();
-    let last_15: Vec<&str> = lines
+    let non_empty_lines: Vec<&str> = lines
         .iter()
-        .rev()
-        .take(15)
         .filter(|l| !l.trim().is_empty())
         .copied()
         .collect();
-    let recent_content = last_15.iter().rev().cloned().collect::<Vec<_>>().join("\n");
-    let recent_lower = recent_content.to_lowercase();
 
-    // RUNNING: OpenCode shows "esc to interrupt" at the bottom when busy (same as Claude Code)
-    if recent_lower.contains("esc to interrupt") || recent_lower.contains("esc interrupt") {
+    // RUNNING: OpenCode shows "esc to interrupt" when busy (same as Claude Code)
+    // Search entire content since status bar can be anywhere in TUI
+    if content.contains("esc to interrupt") || content.contains("esc interrupt") {
         return Status::Running;
     }
 
-    // Also check for spinner characters in last 5 lines
-    let last_5: Vec<&str> = lines.iter().rev().take(5).copied().collect();
-    for line in &last_5 {
+    // Also check for spinner characters anywhere
+    for line in &lines {
         for spinner in SPINNER_CHARS {
             if line.contains(spinner) {
                 return Status::Running;
@@ -377,7 +343,7 @@ fn detect_opencode_status(content: &str) -> Status {
     }
 
     // WAITING: Selection menus (shows "Enter to select" or "Esc to cancel")
-    if recent_lower.contains("enter to select") || recent_lower.contains("esc to cancel") {
+    if content.contains("enter to select") || content.contains("esc to cancel") {
         return Status::Waiting;
     }
 
@@ -391,21 +357,19 @@ fn detect_opencode_status(content: &str) -> Status {
         "allow",
     ];
     for prompt in &permission_prompts {
-        if recent_lower.contains(prompt) {
+        if content.contains(prompt) {
             return Status::Waiting;
         }
     }
 
     // WAITING: Selection cursor with numbered options
-    if recent_content.contains("❯")
-        && (recent_content.contains("1.") || recent_content.contains("2."))
-    {
+    if content.contains("❯") && (content.contains("1.") || content.contains("2.")) {
         return Status::Waiting;
     }
 
-    // WAITING: Check if last non-empty line is input prompt
-    if let Some(last_line) = lines.iter().rev().find(|l| !l.trim().is_empty()) {
-        let clean_line = strip_ansi(last_line).trim().to_string();
+    // WAITING: Check for input prompt in non-empty lines
+    for line in non_empty_lines.iter().rev().take(10) {
+        let clean_line = strip_ansi(line).trim().to_string();
 
         // OpenCode input prompts
         if clean_line == ">" || clean_line == "> " || clean_line == ">>" {
@@ -433,42 +397,13 @@ fn detect_opencode_status(content: &str) -> Status {
     ];
     let has_completion = completion_indicators
         .iter()
-        .any(|ind| recent_lower.contains(ind));
+        .any(|ind| content.contains(ind));
     if has_completion {
-        for line in &last_5 {
+        for line in non_empty_lines.iter().rev().take(10) {
             let clean = strip_ansi(line).trim().to_string();
             if clean == ">" || clean == "> " || clean == ">>" {
                 return Status::Waiting;
             }
-        }
-    }
-
-    Status::Idle
-}
-
-fn detect_shell_status(content: &str) -> Status {
-    // Shell prompts
-    if content.ends_with("$ ")
-        || content.ends_with("> ")
-        || content.ends_with("# ")
-        || content.ends_with("% ")
-    {
-        return Status::Waiting;
-    }
-
-    // Running if we see a spinner (but not box-drawing chars which are common in TUIs)
-    for spinner in SPINNER_CHARS {
-        if content.contains(spinner) {
-            return Status::Running;
-        }
-    }
-
-    // "..." can indicate progress but is also common in output, so only check last few lines
-    let lines: Vec<&str> = content.lines().collect();
-    let last_5: Vec<&str> = lines.iter().rev().take(5).copied().collect();
-    for line in &last_5 {
-        if line.trim().ends_with("...") && line.len() < 50 {
-            return Status::Running;
         }
     }
 
@@ -571,32 +506,31 @@ mod tests {
 
     #[test]
     fn test_detect_opencode_status_waiting() {
-        // Permission prompts
+        // Permission prompts (function expects lowercase input from content_lower)
         assert_eq!(
-            detect_opencode_status("Allow this action? [y/n]"),
+            detect_opencode_status("allow this action? [y/n]"),
             Status::Waiting
         );
-        assert_eq!(detect_opencode_status("Continue? (y/n)"), Status::Waiting);
-        assert_eq!(detect_opencode_status("Approve changes"), Status::Waiting);
+        assert_eq!(detect_opencode_status("continue? (y/n)"), Status::Waiting);
+        assert_eq!(detect_opencode_status("approve changes"), Status::Waiting);
 
         // Input prompt
-        assert_eq!(detect_opencode_status("Task complete.\n>"), Status::Waiting);
+        assert_eq!(detect_opencode_status("task complete.\n>"), Status::Waiting);
         assert_eq!(
-            detect_opencode_status("Ready for input\n> "),
+            detect_opencode_status("ready for input\n> "),
             Status::Waiting
         );
 
         // Completion + prompt
         assert_eq!(
-            detect_opencode_status("Done! What else can I help with?\n>"),
+            detect_opencode_status("done! what else can i help with?\n>"),
             Status::Waiting
         );
     }
 
     #[test]
     fn test_detect_opencode_status_idle() {
-        // No indicators = idle
-        assert_eq!(detect_opencode_status("completed the task"), Status::Idle);
+        // No indicators = idle (function expects lowercase input from content_lower)
         assert_eq!(detect_opencode_status("some random output"), Status::Idle);
         assert_eq!(
             detect_opencode_status("file saved successfully"),

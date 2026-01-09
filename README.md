@@ -9,8 +9,7 @@ This project was inspired by [agent-deck](https://github.com/asheshgoplani/agent
 ### Homebrew (macOS and Linux)
 
 ```bash
-brew tap njbrake/aoe
-brew install aoe
+brew install njbrake/aoe/aoe
 ```
 
 Or clone and build:

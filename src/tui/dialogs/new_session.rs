@@ -7,18 +7,20 @@ use ratatui::widgets::*;
 use super::DialogResult;
 use crate::tui::styles::Theme;
 
+const TOOL_OPTIONS: [&str; 2] = ["claude", "opencode"];
+
 pub struct NewSessionData {
     pub title: String,
     pub path: String,
     pub group: String,
-    pub command: String,
+    pub tool: String,
 }
 
 pub struct NewSessionDialog {
     title: String,
     path: String,
     group: String,
-    command: String,
+    tool_index: usize,
     focused_field: usize,
 }
 
@@ -32,7 +34,7 @@ impl NewSessionDialog {
             title: String::new(),
             path: current_dir,
             group: String::new(),
-            command: String::new(),
+            tool_index: 0,
             focused_field: 0,
         }
     }
@@ -42,7 +44,6 @@ impl NewSessionDialog {
             KeyCode::Esc => DialogResult::Cancel,
             KeyCode::Enter => {
                 if self.title.is_empty() {
-                    // Use directory name as title
                     self.title = std::path::Path::new(&self.path)
                         .file_name()
                         .map(|s| s.to_string_lossy().to_string())
@@ -52,7 +53,7 @@ impl NewSessionDialog {
                     title: self.title.clone(),
                     path: self.path.clone(),
                     group: self.group.clone(),
-                    command: self.command.clone(),
+                    tool: TOOL_OPTIONS[self.tool_index].to_string(),
                 })
             }
             KeyCode::Tab => {
@@ -67,12 +68,24 @@ impl NewSessionDialog {
                 };
                 DialogResult::Continue
             }
+            KeyCode::Left | KeyCode::Right if self.focused_field == 3 => {
+                self.tool_index = 1 - self.tool_index;
+                DialogResult::Continue
+            }
+            KeyCode::Char(' ') if self.focused_field == 3 => {
+                self.tool_index = 1 - self.tool_index;
+                DialogResult::Continue
+            }
             KeyCode::Backspace => {
-                self.current_field_mut().pop();
+                if self.focused_field != 3 {
+                    self.current_field_mut().pop();
+                }
                 DialogResult::Continue
             }
             KeyCode::Char(c) => {
-                self.current_field_mut().push(c);
+                if self.focused_field != 3 {
+                    self.current_field_mut().push(c);
+                }
                 DialogResult::Continue
             }
             _ => DialogResult::Continue,
@@ -84,13 +97,11 @@ impl NewSessionDialog {
             0 => &mut self.title,
             1 => &mut self.path,
             2 => &mut self.group,
-            3 => &mut self.command,
             _ => &mut self.title,
         }
     }
 
     pub fn render(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
-        // Center the dialog
         let dialog_width = 60;
         let dialog_height = 14;
         let x = area.x + (area.width.saturating_sub(dialog_width)) / 2;
@@ -103,7 +114,6 @@ impl NewSessionDialog {
             height: dialog_height.min(area.height),
         };
 
-        // Clear background
         let clear = Clear;
         frame.render_widget(clear, dialog_area);
 
@@ -128,15 +138,13 @@ impl NewSessionDialog {
             ])
             .split(inner);
 
-        // Fields
-        let fields = [
+        let text_fields = [
             ("Title:", &self.title),
             ("Path:", &self.path),
             ("Group:", &self.group),
-            ("Command:", &self.command),
         ];
 
-        for (idx, (label, value)) in fields.iter().enumerate() {
+        for (idx, (label, value)) in text_fields.iter().enumerate() {
             let is_focused = idx == self.focused_field;
             let style = if is_focused {
                 Style::default().fg(theme.accent)
@@ -144,12 +152,8 @@ impl NewSessionDialog {
                 Style::default().fg(theme.text)
             };
 
-            let display_value = if value.is_empty() {
-                match idx {
-                    0 => "(directory name)",
-                    3 => "(default: claude)",
-                    _ => "",
-                }
+            let display_value = if value.is_empty() && idx == 0 {
+                "(directory name)"
             } else {
                 value.as_str()
             };
@@ -164,10 +168,42 @@ impl NewSessionDialog {
             frame.render_widget(Paragraph::new(line), chunks[idx]);
         }
 
-        // Hint
+        let is_tool_focused = self.focused_field == 3;
+        let tool_style = if is_tool_focused {
+            Style::default().fg(theme.accent)
+        } else {
+            Style::default().fg(theme.text)
+        };
+
+        let claude_style = if self.tool_index == 0 {
+            Style::default().fg(theme.accent).bold()
+        } else {
+            Style::default().fg(theme.dimmed)
+        };
+        let opencode_style = if self.tool_index == 1 {
+            Style::default().fg(theme.accent).bold()
+        } else {
+            Style::default().fg(theme.dimmed)
+        };
+
+        let tool_line = Line::from(vec![
+            Span::styled("Tool:  ", tool_style),
+            Span::styled(if self.tool_index == 0 { "● " } else { "○ " }, claude_style),
+            Span::styled("claude", claude_style),
+            Span::raw("   "),
+            Span::styled(
+                if self.tool_index == 1 { "● " } else { "○ " },
+                opencode_style,
+            ),
+            Span::styled("opencode", opencode_style),
+        ]);
+        frame.render_widget(Paragraph::new(tool_line), chunks[3]);
+
         let hint = Line::from(vec![
             Span::styled("Tab", Style::default().fg(theme.hint)),
-            Span::raw(" next field  "),
+            Span::raw(" next  "),
+            Span::styled("←/→/Space", Style::default().fg(theme.hint)),
+            Span::raw(" toggle tool  "),
             Span::styled("Enter", Style::default().fg(theme.hint)),
             Span::raw(" create  "),
             Span::styled("Esc", Style::default().fg(theme.hint)),
