@@ -1,27 +1,20 @@
 # Agent of Empires (aoe)
 
-A terminal session manager using tmux to aid in management and monitoring of AI coding agents, written in Rust.
-
-This project was inspired by [agent-deck](https://github.com/asheshgoplani/agent-deck) (Go + Bubble Tea), but written in Rust with a simplified architecture and extended functionality.
+A terminal session manager for Linux and MacOS using tmux to aid in management and monitoring of AI coding agents, written in Rust.
 
 ![Agent of Empires TUI](assets/tui.png)
 
 ## Installation
 
-### Homebrew (macOS and Linux)
-
 ```bash
-brew install njbrake/aoe/aoe
-# update via brew update && brew upgrade aoe
-```
+# Quick install (Linux & macOS)
+curl -fsSL https://raw.githubusercontent.com/njbrake/agent-of-empires/main/scripts/install.sh | bash
 
-Or clone and build:
+# Homebrew
+brew install njbrake/aoe/aoe # update via `brew update && brew upgrade aoe`
 
-```bash
-git clone https://github.com/njbrake/agent-of-empires
-cd agent-of-empires
-cargo build --release
-# Binary at target/release/aoe
+# Build from source
+git clone https://github.com/njbrake/agent-of-empires && cd agent-of-empires && cargo build --release
 ```
 
 ## How It Works
@@ -34,7 +27,6 @@ Once you attach to a session, you're working directly in tmux. Basic tmux knowle
 |--------------|--------------|
 | `Ctrl+b d` | Detach from session (return to Agent of Empires) |
 | `Ctrl+b [` | Enter scroll/copy mode |
-| `Ctrl+b c` | Create new window within session |
 | `Ctrl+b n` / `Ctrl+b p` | Next/previous window |
 
 If you're new to tmux, the key thing to remember is `Ctrl+b d` to detach and return to the TUI.
@@ -47,13 +39,6 @@ If you're new to tmux, the key thing to remember is `Ctrl+b d` to detach and ret
 - **Status Detection** - Automatic status detection for Claude Code and OpenCode
 - **tmux Integration** - Sessions persist in tmux for reliability
 - **Multi-profile Support** - Separate workspaces for different projects
-
-## Requirements
-
-- **tmux** - Required for session management (installed automatically via Homebrew)
-  - macOS: `brew install tmux`
-  - Ubuntu/Debian: `sudo apt install tmux`
-  - Familiarity with basic tmux operations is recommended (see [How It Works](#how-it-works) above)
 
 ## Quick Start
 
@@ -73,39 +58,6 @@ aoe add /path/to/project
 aoe           # Launch TUI with default profile
 aoe -p work   # Launch with a specific profile
 ```
-
-### Keyboard Shortcuts
-
-| Key | Action |
-|-----|--------|
-| **Navigation** | |
-| `j` / `↓` | Move down |
-| `k` / `↑` | Move up |
-| `h` / `←` | Collapse group |
-| `l` / `→` | Expand group |
-| `g` | Go to top |
-| `G` | Go to bottom |
-| `PageUp` / `PageDown` | Page navigation |
-| **Actions** | |
-| `Enter` | Attach to selected session |
-| `n` | Create new session |
-| `d` | Delete selected session |
-| `r` / `F5` | Refresh session list |
-| **Other** | |
-| `/` | Search sessions |
-| `?` | Toggle help overlay |
-| `q` / `Ctrl+c` | Quit TUI |
-
-### Attaching and Detaching from Sessions
-
-1. **Attach to a session**: Select a session and press `Enter`
-   - The TUI will temporarily exit and you'll be connected to the tmux session
-
-2. **Detach from a session**: Press `Ctrl+b` then `d`
-   - This is tmux's standard detach sequence
-   - You'll return to the Agent of Empires TUI
-
-3. **Alternative detach** (if already in tmux): The session will be switched, use `Ctrl+b d` to return
 
 ### Session Status Indicators
 
@@ -143,7 +95,6 @@ aoe profile create <name>   # Create a profile
 aoe profile delete <name>   # Delete a profile
 
 # Maintenance
-aoe update                  # Check for updates
 aoe uninstall               # Uninstall Agent of Empires
 ```
 
@@ -204,16 +155,6 @@ AGENT_OF_EMPIRES_DEBUG=1 cargo run
 cargo build --release
 ```
 
-## Dependencies
-
-Key dependencies:
-- `ratatui` + `crossterm` - TUI framework
-- `clap` - CLI argument parsing
-- `serde` + `serde_json` + `toml` - Serialization
-- `tokio` - Async runtime
-- `notify` - File system watching
-- `reqwest` - HTTP client for updates
-
 ## FAQ
 
 ### Using aoe with mobile SSH clients (Termius, Blink, etc.)
@@ -230,6 +171,10 @@ aoe
 
 When you attach to an agent session, tmux will switch to that session. To navigate back to `aoe` use the tmux command `Ctrl+b L` to switch to last session (toggle back to aoe)
 
+
+## Acknowledgments
+
+Inspired by [agent-deck](https://github.com/asheshgoplani/agent-deck) (Go + Bubble Tea).
 
 ## License
 
