@@ -55,7 +55,30 @@ impl App {
 
             // Poll with short timeout for responsive input
             if event::poll(Duration::from_millis(50))? {
-                if let Event::Key(key) = event::read()? {
+                let evt = event::read()?;
+                // #region agent log
+                use std::io::Write;
+                let log_path = "/Users/nbrake/scm/agent-of-empires/.cursor/debug.log";
+                if let Event::Resize(w, h) = &evt {
+                    if let Ok(mut f) = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(log_path)
+                    {
+                        let _ = writeln!(
+                            f,
+                            r#"{{"hypothesisId":"E","location":"app.rs:run:resize_event","message":"terminal resize event received","data":{{"new_width":{},"new_height":{}}},"timestamp":{}}}"#,
+                            w,
+                            h,
+                            std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap()
+                                .as_millis()
+                        );
+                    }
+                }
+                // #endregion
+                if let Event::Key(key) = evt {
                     self.handle_key(key, terminal).await?;
 
                     // Draw immediately after input for responsiveness

@@ -4,7 +4,7 @@ use anyhow::{bail, Result};
 use clap::Args;
 use std::path::PathBuf;
 
-use crate::session::{GroupTree, Instance, Storage};
+use crate::session::{civilizations, GroupTree, Instance, Storage};
 
 #[derive(Args)]
 pub struct AddArgs {
@@ -44,13 +44,6 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
         bail!("Path is not a directory: {}", path.display());
     }
 
-    let user_provided_title = args.title.is_some();
-    let title = args.title.unwrap_or_else(|| {
-        path.file_name()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_else(|| "untitled".to_string())
-    });
-
     let storage = Storage::new(profile)?;
     let (mut instances, groups) = storage.load_with_groups()?;
 
@@ -67,16 +60,16 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
         None
     };
 
-    // Generate unique title if needed
-    let final_title = if !user_provided_title {
-        generate_unique_title(&instances, &title, path.to_str().unwrap_or(""))
-    } else {
-        // Check for exact duplicate
-        if is_duplicate_session(&instances, &title, path.to_str().unwrap_or("")) {
+    // Generate title
+    let final_title = if let Some(title) = &args.title {
+        if is_duplicate_session(&instances, title, path.to_str().unwrap_or("")) {
             println!("Session already exists with same title and path: {}", title);
             return Ok(());
         }
-        title
+        title.clone()
+    } else {
+        let existing_titles: Vec<&str> = instances.iter().map(|i| i.title.as_str()).collect();
+        civilizations::generate_random_title(&existing_titles)
     };
 
     let mut instance = Instance::new(&final_title, path.to_str().unwrap_or(""));

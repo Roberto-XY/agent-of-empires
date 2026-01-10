@@ -79,6 +79,30 @@ impl Preview {
         let inner = block.inner(area);
         frame.render_widget(block, area);
 
+        // #region agent log
+        use std::io::Write;
+        let log_path = "/Users/nbrake/scm/agent-of-empires/.cursor/debug.log";
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_path)
+        {
+            let _ = writeln!(
+                f,
+                r#"{{"hypothesisId":"E","location":"preview.rs:render_output","message":"render_output dimensions","data":{{"area_width":{},"area_height":{},"inner_width":{},"inner_height":{},"instance_id":"{}"}},"timestamp":{}}}"#,
+                area.width,
+                area.height,
+                inner.width,
+                inner.height,
+                instance.id,
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis()
+            );
+        }
+        // #endregion
+
         if let Some(error) = &instance.last_error {
             let error_lines: Vec<Line> = vec![
                 Line::from(Span::styled(

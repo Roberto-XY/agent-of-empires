@@ -5,6 +5,7 @@ use ratatui::prelude::*;
 use ratatui::widgets::*;
 
 use super::DialogResult;
+use crate::session::civilizations;
 use crate::tmux::AvailableTools;
 use crate::tui::styles::Theme;
 
@@ -22,10 +23,11 @@ pub struct NewSessionDialog {
     tool_index: usize,
     focused_field: usize,
     available_tools: Vec<&'static str>,
+    existing_titles: Vec<String>,
 }
 
 impl NewSessionDialog {
-    pub fn new(tools: AvailableTools) -> Self {
+    pub fn new(tools: AvailableTools, existing_titles: Vec<String>) -> Self {
         let current_dir = std::env::current_dir()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default();
@@ -39,6 +41,7 @@ impl NewSessionDialog {
             tool_index: 0,
             focused_field: 0,
             available_tools,
+            existing_titles,
         }
     }
 
@@ -51,6 +54,7 @@ impl NewSessionDialog {
             tool_index: 0,
             focused_field: 0,
             available_tools: tools,
+            existing_titles: Vec::new(),
         }
     }
 
@@ -61,14 +65,14 @@ impl NewSessionDialog {
         match key.code {
             KeyCode::Esc => DialogResult::Cancel,
             KeyCode::Enter => {
-                if self.title.is_empty() {
-                    self.title = std::path::Path::new(&self.path)
-                        .file_name()
-                        .map(|s| s.to_string_lossy().to_string())
-                        .unwrap_or_else(|| "untitled".to_string());
-                }
+                let final_title = if self.title.is_empty() {
+                    let refs: Vec<&str> = self.existing_titles.iter().map(|s| s.as_str()).collect();
+                    civilizations::generate_random_title(&refs)
+                } else {
+                    self.title.clone()
+                };
                 DialogResult::Submit(NewSessionData {
-                    title: self.title.clone(),
+                    title: final_title,
                     path: self.path.clone(),
                     group: self.group.clone(),
                     tool: self.available_tools[self.tool_index].to_string(),
@@ -172,7 +176,7 @@ impl NewSessionDialog {
             };
 
             let display_value = if value.is_empty() && idx == 0 {
-                "(directory name)"
+                "(random civ)"
             } else {
                 value.as_str()
             };
@@ -291,7 +295,11 @@ mod tests {
         let result = dialog.handle_key(key(KeyCode::Enter));
         match result {
             DialogResult::Submit(data) => {
-                assert_eq!(data.title, "project");
+                assert!(
+                    civilizations::CIVILIZATIONS.contains(&data.title.as_str()),
+                    "Expected a civilization name, got: {}",
+                    data.title
+                );
                 assert_eq!(data.path, "/tmp/project");
                 assert_eq!(data.group, "");
                 assert_eq!(data.tool, "claude");

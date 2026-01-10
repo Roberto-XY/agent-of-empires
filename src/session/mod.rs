@@ -1,5 +1,6 @@
 //! Session management module
 
+pub mod civilizations;
 pub mod claude;
 pub mod config;
 mod groups;

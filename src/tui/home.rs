@@ -210,7 +210,12 @@ impl HomeView {
                 self.search_query.clear();
             }
             KeyCode::Char('n') => {
-                self.new_dialog = Some(NewSessionDialog::new(self.available_tools.clone()));
+                let existing_titles: Vec<String> =
+                    self.instances.iter().map(|i| i.title.clone()).collect();
+                self.new_dialog = Some(NewSessionDialog::new(
+                    self.available_tools.clone(),
+                    existing_titles,
+                ));
             }
             KeyCode::Char('d') => {
                 if self.selected_session.is_some() {
@@ -778,10 +783,13 @@ mod tests {
     #[test]
     fn test_has_dialog_returns_true_for_new_dialog() {
         let mut env = create_test_env_empty();
-        env.view.new_dialog = Some(NewSessionDialog::new(AvailableTools {
-            claude: true,
-            opencode: false,
-        }));
+        env.view.new_dialog = Some(NewSessionDialog::new(
+            AvailableTools {
+                claude: true,
+                opencode: false,
+            },
+            Vec::new(),
+        ));
         assert!(env.view.has_dialog());
     }
 

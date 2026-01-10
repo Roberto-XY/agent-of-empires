@@ -174,7 +174,7 @@ impl Session {
     }
 
     fn resize_window(&self, width: u16, height: u16) {
-        let _ = Command::new("tmux")
+        let result = Command::new("tmux")
             .args([
                 "resize-window",
                 "-t",
@@ -185,6 +185,35 @@ impl Session {
                 &height.to_string(),
             ])
             .output();
+        // #region agent log
+        use std::io::Write;
+        let log_path = "/Users/nbrake/scm/agent-of-empires/.cursor/debug.log";
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_path)
+        {
+            let (success, stderr) = match &result {
+                Ok(o) => (
+                    o.status.success(),
+                    String::from_utf8_lossy(&o.stderr).to_string(),
+                ),
+                Err(e) => (false, e.to_string()),
+            };
+            let _ = writeln!(
+                f,
+                r#"{{"hypothesisId":"B","location":"session.rs:resize_window","message":"resize_window result","data":{{"width":{},"height":{},"success":{},"stderr":"{}"}},"timestamp":{}}}"#,
+                width,
+                height,
+                success,
+                stderr.replace("\"", "\\\"").replace("\n", " "),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis()
+            );
+        }
+        // #endregion
     }
 
     pub fn capture_pane_with_size(
@@ -197,6 +226,29 @@ impl Session {
             return Ok(String::new());
         }
 
+        // #region agent log
+        use std::io::Write;
+        let log_path = "/Users/nbrake/scm/agent-of-empires/.cursor/debug.log";
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_path)
+        {
+            let _ = writeln!(
+                f,
+                r#"{{"hypothesisId":"A","location":"session.rs:capture_pane_with_size:entry","message":"capture_pane_with_size called","data":{{"session":"{}","lines":{},"width":{:?},"height":{:?}}},"timestamp":{}}}"#,
+                self.name,
+                lines,
+                width,
+                height,
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis()
+            );
+        }
+        // #endregion
+
         // Save current window size before resizing
         let original_size = if width.is_some() && height.is_some() {
             self.get_window_size()
@@ -204,9 +256,65 @@ impl Session {
             None
         };
 
+        // #region agent log
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_path)
+        {
+            let _ = writeln!(
+                f,
+                r#"{{"hypothesisId":"C","location":"session.rs:capture_pane_with_size:original_size","message":"original window size captured","data":{{"original_size":{:?}}},"timestamp":{}}}"#,
+                original_size,
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis()
+            );
+        }
+        // #endregion
+
         // Resize the window to match the preview dimensions if provided
         if let (Some(w), Some(h)) = (width, height) {
+            // #region agent log
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(log_path)
+            {
+                let _ = writeln!(
+                    f,
+                    r#"{{"hypothesisId":"B","location":"session.rs:capture_pane_with_size:pre_resize","message":"about to resize window","data":{{"target_width":{},"target_height":{}}},"timestamp":{}}}"#,
+                    w,
+                    h,
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_millis()
+                );
+            }
+            // #endregion
             self.resize_window(w, h);
+            // #region agent log
+            let post_resize_size = self.get_window_size();
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(log_path)
+            {
+                let _ = writeln!(
+                    f,
+                    r#"{{"hypothesisId":"B","location":"session.rs:capture_pane_with_size:post_resize","message":"resize complete, checking new size","data":{{"post_resize_size":{:?},"target_was":({},{})}},"timestamp":{}}}"#,
+                    post_resize_size,
+                    w,
+                    h,
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_millis()
+                );
+            }
+            // #endregion
         }
 
         let output = Command::new("tmux")
@@ -220,8 +328,46 @@ impl Session {
             ])
             .output()?;
 
+        // #region agent log
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_path)
+        {
+            let captured_lines = String::from_utf8_lossy(&output.stdout).lines().count();
+            let _ = writeln!(
+                f,
+                r#"{{"hypothesisId":"D","location":"session.rs:capture_pane_with_size:captured","message":"pane captured","data":{{"captured_lines":{},"success":{}}},"timestamp":{}}}"#,
+                captured_lines,
+                output.status.success(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis()
+            );
+        }
+        // #endregion
+
         // Restore original window size
         if let Some((orig_w, orig_h)) = original_size {
+            // #region agent log
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(log_path)
+            {
+                let _ = writeln!(
+                    f,
+                    r#"{{"hypothesisId":"A","location":"session.rs:capture_pane_with_size:restore","message":"restoring original size","data":{{"orig_w":{},"orig_h":{}}},"timestamp":{}}}"#,
+                    orig_w,
+                    orig_h,
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_millis()
+                );
+            }
+            // #endregion
             self.resize_window(orig_w, orig_h);
         }
 
