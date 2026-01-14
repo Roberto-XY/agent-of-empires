@@ -34,6 +34,31 @@ impl Default for PreviewCache {
     }
 }
 
+const INDENTS: [&str; 10] = [
+    "",
+    "  ",
+    "    ",
+    "      ",
+    "        ",
+    "          ",
+    "            ",
+    "              ",
+    "                ",
+    "                  ",
+];
+
+fn get_indent(depth: usize) -> &'static str {
+    INDENTS.get(depth).copied().unwrap_or(INDENTS[9])
+}
+
+const ICON_RUNNING: &str = "●";
+const ICON_WAITING: &str = "◐";
+const ICON_IDLE: &str = "○";
+const ICON_ERROR: &str = "✕";
+const ICON_STARTING: &str = "◌";
+const ICON_COLLAPSED: &str = "▶";
+const ICON_EXPANDED: &str = "▼";
+
 pub struct HomeView {
     storage: Storage,
     instances: Vec<Instance>,
@@ -147,7 +172,7 @@ impl HomeView {
     /// Call `apply_status_updates` to check for and apply results.
     pub fn request_status_refresh(&mut self) {
         if !self.pending_status_refresh {
-            let instances = self.instances.clone();
+            let instances: Vec<Instance> = self.instances.clone();
             self.status_poller.request_refresh(instances);
             self.pending_status_refresh = true;
         }
@@ -591,27 +616,58 @@ impl HomeView {
             let main_repo_path = GitWorktree::find_main_repo(&path)?;
             let git_wt = GitWorktree::new(main_repo_path.clone())?;
 
-            let session_id = uuid::Uuid::new_v4().to_string();
-            let session_id_short = &session_id[..8];
+            if !data.create_new_branch {
+                let existing_worktrees = git_wt.list_worktrees()?;
+                if let Some(existing) = existing_worktrees
+                    .iter()
+                    .find(|wt| wt.branch.as_deref() == Some(branch))
+                {
+                    final_path = existing.path.to_string_lossy().to_string();
+                    worktree_info_opt = Some(WorktreeInfo {
+                        branch: branch.clone(),
+                        main_repo_path: main_repo_path.to_string_lossy().to_string(),
+                        managed_by_aoe: false,
+                        created_at: Utc::now(),
+                        cleanup_on_delete: false,
+                    });
+                } else {
+                    let session_id = uuid::Uuid::new_v4().to_string();
+                    let session_id_short = &session_id[..8];
+                    let template = &config.worktree.path_template;
+                    let worktree_path = git_wt.compute_path(branch, template, session_id_short)?;
 
-            let template = &config.worktree.path_template;
-            let worktree_path = git_wt.compute_path(branch, template, session_id_short)?;
+                    git_wt.create_worktree(branch, &worktree_path, false)?;
 
-            if worktree_path.exists() {
-                anyhow::bail!("Worktree already exists at {}", worktree_path.display());
+                    final_path = worktree_path.to_string_lossy().to_string();
+                    worktree_info_opt = Some(WorktreeInfo {
+                        branch: branch.clone(),
+                        main_repo_path: main_repo_path.to_string_lossy().to_string(),
+                        managed_by_aoe: true,
+                        created_at: Utc::now(),
+                        cleanup_on_delete: true,
+                    });
+                }
+            } else {
+                let session_id = uuid::Uuid::new_v4().to_string();
+                let session_id_short = &session_id[..8];
+                let template = &config.worktree.path_template;
+                let worktree_path = git_wt.compute_path(branch, template, session_id_short)?;
+
+                if worktree_path.exists() {
+                    anyhow::bail!("Worktree already exists at {}", worktree_path.display());
+                }
+
+                git_wt.create_worktree(branch, &worktree_path, true)?;
+
+                final_path = worktree_path.to_string_lossy().to_string();
+                worktree_info_opt = Some(WorktreeInfo {
+                    branch: branch.clone(),
+                    main_repo_path: main_repo_path.to_string_lossy().to_string(),
+                    managed_by_aoe: true,
+                    created_at: Utc::now(),
+                    cleanup_on_delete: true,
+                });
             }
-
-            git_wt.create_worktree(branch, &worktree_path, data.create_new_branch)?;
-
-            final_path = worktree_path.to_string_lossy().to_string();
-
-            worktree_info_opt = Some(WorktreeInfo {
-                branch: branch.clone(),
-                main_repo_path: main_repo_path.to_string_lossy().to_string(),
-                managed_by_aoe: true,
-                created_at: Utc::now(),
-                cleanup_on_delete: true,
-            });
         }
 
         let mut instance = Instance::new(&data.title, &final_path);
@@ -813,22 +869,20 @@ impl HomeView {
             return;
         }
 
-        let items_to_show = if let Some(ref filtered) = self.filtered_items {
-            filtered
-                .iter()
-                .filter_map(|&idx| self.flat_items.get(idx))
-                .cloned()
-                .collect()
+        let indices: Vec<usize> = if let Some(ref filtered) = self.filtered_items {
+            filtered.clone()
         } else {
-            self.flat_items.clone()
+            (0..self.flat_items.len()).collect()
         };
 
-        let list_items: Vec<ListItem> = items_to_show
+        let list_items: Vec<ListItem> = indices
             .iter()
             .enumerate()
-            .map(|(idx, item)| {
-                let is_selected = idx == self.cursor;
-                self.render_item(item, is_selected, theme)
+            .filter_map(|(display_idx, &item_idx)| {
+                self.flat_items.get(item_idx).map(|item| {
+                    let is_selected = display_idx == self.cursor;
+                    self.render_item(item, is_selected, theme)
+                })
             })
             .collect();
 
@@ -852,28 +906,34 @@ impl HomeView {
     }
 
     fn render_item(&self, item: &Item, is_selected: bool, theme: &Theme) -> ListItem<'_> {
-        let indent = "  ".repeat(item.depth());
+        let indent = get_indent(item.depth());
 
-        let (icon, text, style) = match item {
+        use std::borrow::Cow;
+
+        let (icon, text, style): (&str, Cow<str>, Style) = match item {
             Item::Group {
                 name,
                 collapsed,
                 session_count,
                 ..
             } => {
-                let icon = if *collapsed { "▶" } else { "▼" };
-                let text = format!("{} ({})", name, session_count);
+                let icon = if *collapsed {
+                    ICON_COLLAPSED
+                } else {
+                    ICON_EXPANDED
+                };
+                let text = Cow::Owned(format!("{} ({})", name, session_count));
                 let style = Style::default().fg(theme.group).bold();
                 (icon, text, style)
             }
             Item::Session { id, .. } => {
                 if let Some(inst) = self.instance_map.get(id) {
                     let icon = match inst.status {
-                        Status::Running => "●",
-                        Status::Waiting => "◐",
-                        Status::Idle => "○",
-                        Status::Error => "✕",
-                        Status::Starting => "◌",
+                        Status::Running => ICON_RUNNING,
+                        Status::Waiting => ICON_WAITING,
+                        Status::Idle => ICON_IDLE,
+                        Status::Error => ICON_ERROR,
+                        Status::Starting => ICON_STARTING,
                     };
                     let color = match inst.status {
                         Status::Running => theme.running,
@@ -883,18 +943,24 @@ impl HomeView {
                         Status::Starting => theme.dimmed,
                     };
                     let style = Style::default().fg(color);
-                    (icon, inst.title.clone(), style)
+                    (icon, Cow::Borrowed(&inst.title), style)
                 } else {
-                    ("?", id.clone(), Style::default().fg(theme.dimmed))
+                    (
+                        "?",
+                        Cow::Borrowed(id.as_str()),
+                        Style::default().fg(theme.dimmed),
+                    )
                 }
             }
         };
 
-        let mut line_spans = vec![
-            Span::raw(indent),
-            Span::styled(format!("{} ", icon), style),
-            Span::styled(text, if is_selected { style.bold() } else { style }),
-        ];
+        let mut line_spans = Vec::with_capacity(5);
+        line_spans.push(Span::raw(indent));
+        line_spans.push(Span::styled(format!("{} ", icon), style));
+        line_spans.push(Span::styled(
+            text.into_owned(),
+            if is_selected { style.bold() } else { style },
+        ));
 
         if let Item::Session { id, .. } = item {
             if let Some(inst) = self.instance_map.get(id) {

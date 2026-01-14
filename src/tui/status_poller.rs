@@ -68,7 +68,7 @@ impl StatusPoller {
         }
     }
 
-    /// Request a status refresh for all given instances.
+    /// Request a status refresh for all given instances (non-blocking).
     pub fn request_refresh(&self, instances: Vec<Instance>) {
         let _ = self.request_tx.send(instances);
     }
