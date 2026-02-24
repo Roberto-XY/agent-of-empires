@@ -319,6 +319,9 @@ impl HomeView {
                 }
                 KeyCode::Enter => {
                     self.search_active = false;
+                    self.search_query = Input::default();
+                    self.search_matches.clear();
+                    self.search_match_index = 0;
                 }
                 _ => {
                     self.search_query

@@ -352,13 +352,15 @@ fn test_search_mode_esc_exits_and_clears() {
 
 #[test]
 #[serial]
-fn test_search_mode_enter_exits_keeps_query() {
+fn test_search_mode_enter_exits_and_clears_state() {
     let mut env = create_test_env_with_sessions(3);
     env.view.handle_key(key(KeyCode::Char('/')));
     env.view.handle_key(key(KeyCode::Char('s')));
     env.view.handle_key(key(KeyCode::Enter));
     assert!(!env.view.search_active);
-    assert_eq!(env.view.search_query.value(), "s");
+    assert_eq!(env.view.search_query.value(), "");
+    assert!(env.view.search_matches.is_empty());
+    assert_eq!(env.view.search_match_index, 0);
 }
 
 #[test]
@@ -553,23 +555,20 @@ fn test_esc_clears_search_matches() {
 
 #[test]
 #[serial]
-fn test_esc_in_normal_mode_clears_matches() {
+fn test_enter_clears_matches_so_n_opens_new_dialog() {
     let mut env = create_test_env_with_sessions(5);
-    // Search, then Enter to exit search mode but keep matches
+    // Search, then Enter to exit search mode
     env.view.handle_key(key(KeyCode::Char('/')));
     env.view.handle_key(key(KeyCode::Char('s')));
     env.view.handle_key(key(KeyCode::Enter));
     assert!(!env.view.search_active);
-    assert!(!env.view.search_matches.is_empty());
-
-    // Cycle to a match so cursor moves
-    env.view.handle_key(key(KeyCode::Char('n')));
-    let cursor_before = env.view.cursor;
-
-    // Esc in normal mode clears matches but keeps cursor position
-    env.view.handle_key(key(KeyCode::Esc));
+    // Enter should have cleared matches
     assert!(env.view.search_matches.is_empty());
-    assert_eq!(env.view.cursor, cursor_before);
+
+    // n should now open new session dialog (not cycle matches)
+    assert!(env.view.new_dialog.is_none());
+    env.view.handle_key(key(KeyCode::Char('n')));
+    assert!(env.view.new_dialog.is_some());
 }
 
 #[test]
@@ -595,7 +594,7 @@ fn test_reload_does_not_snap_cursor_after_enter() {
 
 #[test]
 #[serial]
-fn test_enter_keeps_matches_for_n_cycling() {
+fn test_enter_clears_matches_and_resets_index() {
     let mut env = create_test_env_with_sessions(5);
     env.view.handle_key(key(KeyCode::Char('/')));
     env.view.handle_key(key(KeyCode::Char('s')));
@@ -604,12 +603,9 @@ fn test_enter_keeps_matches_for_n_cycling() {
 
     env.view.handle_key(key(KeyCode::Enter));
     assert!(!env.view.search_active);
-    // Matches should still be available for n/N
-    assert_eq!(env.view.search_matches.len(), match_count);
-
-    // n should cycle through matches
-    env.view.handle_key(key(KeyCode::Char('n')));
-    assert_eq!(env.view.search_match_index, 1);
+    // Enter should clear matches so normal keybindings work
+    assert!(env.view.search_matches.is_empty());
+    assert_eq!(env.view.search_match_index, 0);
 }
 
 #[test]
