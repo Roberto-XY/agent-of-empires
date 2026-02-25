@@ -282,7 +282,7 @@ fn default_compose_agent_service() -> String {
 impl Default for ComposeConfig {
     fn default() -> Self {
         Self {
-            compose_files: Vec::new(),
+            compose_files: vec!["compose.yaml".to_string()],
             agent_service: default_compose_agent_service(),
         }
     }
