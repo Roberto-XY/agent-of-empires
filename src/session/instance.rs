@@ -160,55 +160,59 @@ impl Instance {
         self.sandbox_info.as_ref().is_some_and(|s| s.enabled)
     }
 
+    /// Build a ComposeEngine for this instance if the config uses Compose runtime.
+    ///
+    /// Returns `Ok(None)` when runtime is not Compose. Returns an error if
+    /// Compose runtime is selected but the `[sandbox.compose]` config is missing.
+    fn compose_engine(&self, cfg: &super::config::Config) -> Result<Option<ComposeEngine>> {
+        if cfg.sandbox.container_runtime != ContainerRuntimeName::Compose {
+            return Ok(None);
+        }
+        let compose_config = cfg.sandbox.compose.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("Compose runtime selected but [sandbox.compose] config is missing")
+        })?;
+        let app_dir = super::get_app_dir()?;
+        Ok(Some(ComposeEngine::new(
+            &self.id,
+            std::path::Path::new(&self.project_path),
+            compose_config,
+            &app_dir,
+        )))
+    }
+
     /// Check if the sandbox (Docker container or Compose stack) is currently running.
-    pub fn is_sandbox_running(&self) -> Result<bool> {
+    pub fn is_sandbox_running(&self, cfg: &super::config::Config) -> Result<bool> {
         if !self.is_sandboxed() {
             return Ok(false);
         }
 
-        let config = super::config::Config::load().ok().unwrap_or_default();
-        if config.sandbox.container_runtime == ContainerRuntimeName::Compose {
-            if let Some(ref compose_config) = config.sandbox.compose {
-                let app_dir = super::get_app_dir()?;
-                let engine = ComposeEngine::new(
-                    &self.id,
-                    std::path::Path::new(&self.project_path),
-                    compose_config,
-                    &app_dir,
-                );
-                return Ok(engine.is_running()?);
+        match self.compose_engine(cfg)? {
+            Some(engine) => Ok(engine.is_running()?),
+            None => {
+                let container = containers::DockerContainer::from_session_id(&self.id);
+                Ok(container.is_running()?)
             }
-            Ok(false)
-        } else {
-            let container = containers::DockerContainer::from_session_id(&self.id);
-            Ok(container.is_running()?)
         }
     }
 
     /// Clean up sandbox resources (Docker container or Compose stack).
-    pub fn cleanup_sandbox(&self, remove_volumes: bool) -> Result<()> {
+    pub fn cleanup_sandbox(&self, remove_volumes: bool, cfg: &super::config::Config) -> Result<()> {
         if !self.is_sandboxed() {
             return Ok(());
         }
 
-        let config = super::config::Config::load().ok().unwrap_or_default();
-        if config.sandbox.container_runtime == ContainerRuntimeName::Compose {
-            if let Some(ref compose_config) = config.sandbox.compose {
-                let app_dir = super::get_app_dir()?;
-                let engine = ComposeEngine::new(
-                    &self.id,
-                    std::path::Path::new(&self.project_path),
-                    compose_config,
-                    &app_dir,
-                );
-                // We ignore errors here to ensure overlay cleanup proceeds
-                let _ = engine.down(remove_volumes);
+        match self.compose_engine(cfg)? {
+            Some(engine) => {
+                if let Err(e) = engine.down(remove_volumes) {
+                    tracing::warn!("compose down failed during cleanup: {}", e);
+                }
                 engine.cleanup_overlay()?;
             }
-        } else {
-            let container = containers::DockerContainer::from_session_id(&self.id);
-            if container.exists().unwrap_or(false) {
-                container.remove(remove_volumes)?;
+            None => {
+                let container = containers::DockerContainer::from_session_id(&self.id);
+                if container.exists().unwrap_or(false) {
+                    container.remove(remove_volumes)?;
+                }
             }
         }
         Ok(())
@@ -600,6 +604,7 @@ impl Instance {
         let image = &sandbox.image;
         let config = self.build_container_config()?;
         engine.generate_overlay(&config, image)?;
+        // Compose pulls the image automatically during `up`; no explicit pull needed.
         engine.up()?;
 
         if let Some(ref mut sandbox) = self.sandbox_info {
@@ -653,27 +658,22 @@ impl Instance {
     /// Stop the session: kill the tmux session and stop the Docker container
     /// (if sandboxed). The container is stopped but not removed, so it can be
     /// restarted on re-attach.
-    pub fn stop(&self) -> Result<()> {
-        self.kill()?;
+    pub fn stop(&self, cfg: &super::config::Config) -> Result<()> {
+        if let Err(e) = self.kill() {
+            tracing::debug!("tmux session already gone: {}", e);
+        }
 
         if self.is_sandboxed() {
-            let cfg = super::config::Config::load().unwrap_or_default();
-            if cfg.sandbox.container_runtime == ContainerRuntimeName::Compose {
-                if let Some(ref compose_config) = cfg.sandbox.compose {
-                    let app_dir = super::get_app_dir()?;
-                    let engine = ComposeEngine::new(
-                        &self.id,
-                        std::path::Path::new(&self.project_path),
-                        compose_config,
-                        &app_dir,
-                    );
+            match self.compose_engine(cfg)? {
+                Some(engine) => {
                     // down without --volumes: stop but preserve data for restart
                     engine.down(false)?;
                 }
-            } else {
-                let container = containers::DockerContainer::from_session_id(&self.id);
-                if container.is_running().unwrap_or(false) {
-                    container.stop()?;
+                None => {
+                    let container = containers::DockerContainer::from_session_id(&self.id);
+                    if container.is_running().unwrap_or(false) {
+                        container.stop()?;
+                    }
                 }
             }
         }

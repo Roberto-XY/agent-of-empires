@@ -200,6 +200,10 @@ impl SettingsView {
                             };
                             self.apply_field_to_config(self.selected_field);
 
+                            if self.fields[self.selected_field].key == FieldKey::ContainerRuntime {
+                                self.rebuild_fields();
+                            }
+
                             if self.fields[self.selected_field].key == FieldKey::ThemeName {
                                 if let FieldValue::Select { selected, options } =
                                     &self.fields[self.selected_field].value

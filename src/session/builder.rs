@@ -232,7 +232,8 @@ pub fn cleanup_instance(instance: &Instance, created_worktree: Option<&CreatedWo
 
     if let Some(sandbox) = &instance.sandbox_info {
         if sandbox.enabled {
-            if let Err(e) = instance.cleanup_sandbox(true) {
+            let cfg = super::config::Config::load().ok().unwrap_or_default();
+            if let Err(e) = instance.cleanup_sandbox(true, &cfg) {
                 tracing::warn!("Failed to clean up sandbox: {}", e);
             }
         }

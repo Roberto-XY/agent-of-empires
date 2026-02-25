@@ -123,16 +123,14 @@ pub async fn run(profile: &str, args: RemoveArgs) -> Result<()> {
             // Container cleanup (if config allows and user didn't request --keep-container)
             if let Some(sandbox) = &inst.sandbox_info {
                 if sandbox.enabled && !args.keep_container {
-                    let config = Config::load().ok().unwrap_or_default();
-                    if config.sandbox.auto_cleanup {
-                        if let Err(e) = inst.cleanup_sandbox(true) {
+                    let cfg = Config::load().ok().unwrap_or_default();
+                    if cfg.sandbox.auto_cleanup {
+                        if let Err(e) = inst.cleanup_sandbox(true, &cfg) {
                             eprintln!("Warning: failed to clean up sandbox: {}", e);
+                        } else if cfg.sandbox.container_runtime == ContainerRuntimeName::Compose {
+                            println!("Compose stack removed");
                         } else {
-                            if config.sandbox.container_runtime == ContainerRuntimeName::Compose {
-                                println!("Compose stack removed");
-                            } else {
-                                println!("Container removed");
-                            }
+                            println!("Container removed");
                         }
                     } else {
                         println!(

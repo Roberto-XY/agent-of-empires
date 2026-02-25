@@ -108,7 +108,8 @@ impl DeletionPoller {
         if request.delete_sandbox {
             if let Some(sandbox) = &request.instance.sandbox_info {
                 if sandbox.enabled {
-                    if let Err(e) = request.instance.cleanup_sandbox(true) {
+                    let cfg = crate::session::Config::load().ok().unwrap_or_default();
+                    if let Err(e) = request.instance.cleanup_sandbox(true, &cfg) {
                         errors.push(format!("Sandbox: {}", e));
                     }
                 }

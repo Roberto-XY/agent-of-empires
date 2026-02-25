@@ -346,7 +346,8 @@ impl App {
                     // can take up to 10s).
                     self.home
                         .set_instance_status(&id, crate::session::Status::Stopped);
-                    match inst_clone.stop() {
+                    let cfg = crate::session::Config::load().ok().unwrap_or_default();
+                    match inst_clone.stop(&cfg) {
                         Ok(()) => {
                             crate::tmux::refresh_session_cache();
                             self.home.reload()?;

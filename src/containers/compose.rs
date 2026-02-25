@@ -1,6 +1,9 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+use serde::Serialize;
 
 use crate::cli::truncate_id;
 use crate::containers::error::{DockerError, Result};
@@ -82,9 +85,10 @@ impl ComposeEngine {
 
     /// Generate the overlay YAML file from a ContainerConfig.
     pub fn generate_overlay(&self, config: &ContainerConfig, image: &str) -> Result<()> {
-        let overlay_dir = self.overlay_path.parent().ok_or_else(|| {
-            DockerError::ComposeOverlayFailed("Invalid overlay path".to_string())
-        })?;
+        let overlay_dir = self
+            .overlay_path
+            .parent()
+            .ok_or_else(|| DockerError::ComposeOverlayFailed("Invalid overlay path".to_string()))?;
         fs::create_dir_all(overlay_dir)?;
 
         let yaml = build_overlay_yaml(&self.agent_service, config, image);
@@ -244,72 +248,91 @@ fn parse_compose_ps_has_service(output: &str, service_name: &str) -> bool {
     false
 }
 
-/// Build the overlay YAML string from a ContainerConfig.
+/// Top-level compose overlay structure for serde_yaml serialization.
+#[derive(Serialize)]
+struct ComposeOverlay {
+    services: BTreeMap<String, ServiceDef>,
+}
+
+#[derive(Serialize)]
+struct ServiceDef {
+    image: String,
+    command: String,
+    stdin_open: bool,
+    tty: bool,
+    working_dir: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    volumes: Vec<String>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    environment: BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    deploy: Option<DeployDef>,
+}
+
+#[derive(Serialize)]
+struct DeployDef {
+    resources: ResourcesDef,
+}
+
+#[derive(Serialize)]
+struct ResourcesDef {
+    limits: LimitsDef,
+}
+
+#[derive(Serialize)]
+struct LimitsDef {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cpus: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    memory: Option<String>,
+}
+
+/// Build the overlay YAML string from a ContainerConfig using serde_yaml.
 fn build_overlay_yaml(service_name: &str, config: &ContainerConfig, image: &str) -> String {
-    let mut yaml = String::with_capacity(2048);
-
-    yaml.push_str("services:\n");
-    yaml.push_str(&format!("  {}:\n", service_name));
-    yaml.push_str(&format!("    image: {}\n", image));
-    yaml.push_str("    command: sleep infinity\n");
-    yaml.push_str("    stdin_open: true\n");
-    yaml.push_str("    tty: true\n");
-    yaml.push_str(&format!("    working_dir: {}\n", config.working_dir));
-
-    // Volumes
-    if !config.volumes.is_empty() || !config.anonymous_volumes.is_empty() {
-        yaml.push_str("    volumes:\n");
-        for vol in &config.volumes {
-            let mount_str = if vol.read_only {
-                format!("{}:{}:ro", vol.host_path, vol.container_path)
-            } else {
-                format!("{}:{}", vol.host_path, vol.container_path)
-            };
-            yaml.push_str(&format!("      - {}\n", yaml_quote_volume(&mount_str)));
-        }
-        for anon in &config.anonymous_volumes {
-            yaml.push_str(&format!("      - {}\n", anon));
+    let mut volumes = Vec::new();
+    for vol in &config.volumes {
+        if vol.read_only {
+            volumes.push(format!("{}:{}:ro", vol.host_path, vol.container_path));
+        } else {
+            volumes.push(format!("{}:{}", vol.host_path, vol.container_path));
         }
     }
-
-    // Environment
-    if !config.environment.is_empty() {
-        yaml.push_str("    environment:\n");
-        for (key, value) in &config.environment {
-            yaml.push_str(&format!("      {}: {}\n", key, yaml_quote_value(value)));
-        }
+    for anon in &config.anonymous_volumes {
+        volumes.push(anon.clone());
     }
 
-    // Resource limits
-    if config.cpu_limit.is_some() || config.memory_limit.is_some() {
-        yaml.push_str("    deploy:\n");
-        yaml.push_str("      resources:\n");
-        yaml.push_str("        limits:\n");
-        if let Some(ref cpu) = config.cpu_limit {
-            yaml.push_str(&format!("          cpus: '{}'\n", cpu));
-        }
-        if let Some(ref mem) = config.memory_limit {
-            yaml.push_str(&format!("          memory: {}\n", mem));
-        }
-    }
+    let environment: BTreeMap<String, String> = config.environment.iter().cloned().collect();
 
-    yaml
-}
-
-/// Quote a YAML string value, escaping special characters.
-fn yaml_quote_value(value: &str) -> String {
-    // Always double-quote to handle colons, hashes, and special YAML chars
-    let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
-    format!("\"{}\"", escaped)
-}
-
-/// Quote a volume mount string if it contains spaces.
-fn yaml_quote_volume(mount: &str) -> String {
-    if mount.contains(' ') {
-        format!("\"{}\"", mount)
+    let deploy = if config.cpu_limit.is_some() || config.memory_limit.is_some() {
+        Some(DeployDef {
+            resources: ResourcesDef {
+                limits: LimitsDef {
+                    cpus: config.cpu_limit.clone(),
+                    memory: config.memory_limit.clone(),
+                },
+            },
+        })
     } else {
-        mount.to_string()
-    }
+        None
+    };
+
+    let service = ServiceDef {
+        image: image.to_string(),
+        command: "sleep infinity".to_string(),
+        stdin_open: true,
+        tty: true,
+        working_dir: config.working_dir.clone(),
+        volumes,
+        environment,
+        deploy,
+    };
+
+    let mut services = BTreeMap::new();
+    services.insert(service_name.to_string(), service);
+
+    let overlay = ComposeOverlay { services };
+
+    serde_yaml::to_string(&overlay).expect("ComposeOverlay serialization should never fail")
 }
 
 /// Shell-quote a string for safe inclusion in command lines.
@@ -408,17 +431,30 @@ mod tests {
 
         let yaml = build_overlay_yaml("aoe-agent", &config, "ghcr.io/njbrake/aoe-sandbox:latest");
 
-        assert!(yaml.contains("services:"));
-        assert!(yaml.contains("  aoe-agent:"));
-        assert!(yaml.contains("    image: ghcr.io/njbrake/aoe-sandbox:latest"));
-        assert!(yaml.contains("    command: sleep infinity"));
-        assert!(yaml.contains("    stdin_open: true"));
-        assert!(yaml.contains("    tty: true"));
-        assert!(yaml.contains("    working_dir: /workspace/myproject"));
-        assert!(yaml.contains("      - /home/user/project:/workspace/myproject"));
-        assert!(yaml.contains("      TERM: \"xterm-256color\""));
+        // Verify the YAML parses correctly
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
+        let service = &parsed["services"]["aoe-agent"];
+        assert_eq!(
+            service["image"].as_str().unwrap(),
+            "ghcr.io/njbrake/aoe-sandbox:latest"
+        );
+        assert_eq!(service["command"].as_str().unwrap(), "sleep infinity");
+        assert_eq!(service["stdin_open"].as_bool().unwrap(), true);
+        assert_eq!(service["tty"].as_bool().unwrap(), true);
+        assert_eq!(
+            service["working_dir"].as_str().unwrap(),
+            "/workspace/myproject"
+        );
+        assert_eq!(
+            service["volumes"][0].as_str().unwrap(),
+            "/home/user/project:/workspace/myproject"
+        );
+        assert_eq!(
+            service["environment"]["TERM"].as_str().unwrap(),
+            "xterm-256color"
+        );
         // No deploy section when no limits
-        assert!(!yaml.contains("deploy:"));
+        assert!(service["deploy"].is_null());
     }
 
     #[test]
@@ -444,9 +480,14 @@ mod tests {
         };
 
         let yaml = build_overlay_yaml("aoe-agent", &config, "ubuntu:latest");
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
+        let vols = &parsed["services"]["aoe-agent"]["volumes"];
 
-        assert!(yaml.contains("      - /home/user/.gitconfig:/root/.gitconfig:ro"));
-        assert!(yaml.contains("      - /home/user/.ssh:/root/.ssh:ro"));
+        assert_eq!(
+            vols[0].as_str().unwrap(),
+            "/home/user/.gitconfig:/root/.gitconfig:ro"
+        );
+        assert_eq!(vols[1].as_str().unwrap(), "/home/user/.ssh:/root/.ssh:ro");
     }
 
     #[test]
@@ -464,9 +505,14 @@ mod tests {
         };
 
         let yaml = build_overlay_yaml("aoe-agent", &config, "ubuntu:latest");
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
+        let vols = &parsed["services"]["aoe-agent"]["volumes"];
 
-        assert!(yaml.contains("      - /workspace/myproject/node_modules"));
-        assert!(yaml.contains("      - /workspace/myproject/target"));
+        assert_eq!(
+            vols[0].as_str().unwrap(),
+            "/workspace/myproject/node_modules"
+        );
+        assert_eq!(vols[1].as_str().unwrap(), "/workspace/myproject/target");
     }
 
     #[test]
@@ -481,12 +527,11 @@ mod tests {
         };
 
         let yaml = build_overlay_yaml("aoe-agent", &config, "ubuntu:latest");
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
+        let limits = &parsed["services"]["aoe-agent"]["deploy"]["resources"]["limits"];
 
-        assert!(yaml.contains("    deploy:"));
-        assert!(yaml.contains("      resources:"));
-        assert!(yaml.contains("        limits:"));
-        assert!(yaml.contains("          cpus: '2'"));
-        assert!(yaml.contains("          memory: 4g"));
+        assert_eq!(limits["cpus"].as_str().unwrap(), "2");
+        assert_eq!(limits["memory"].as_str().unwrap(), "4g");
     }
 
     #[test]
@@ -501,9 +546,11 @@ mod tests {
         };
 
         let yaml = build_overlay_yaml("aoe-agent", &config, "ubuntu:latest");
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
+        let limits = &parsed["services"]["aoe-agent"]["deploy"]["resources"]["limits"];
 
-        assert!(yaml.contains("          cpus: '0.5'"));
-        assert!(!yaml.contains("memory:"));
+        assert_eq!(limits["cpus"].as_str().unwrap(), "0.5");
+        assert!(limits["memory"].is_null());
     }
 
     #[test]
@@ -515,15 +562,19 @@ mod tests {
             environment: vec![
                 ("PATH".to_string(), "/usr/local/bin:/usr/bin".to_string()),
                 ("MSG".to_string(), "hello \"world\"".to_string()),
+                ("NEWLINE".to_string(), "line1\nline2".to_string()),
             ],
             cpu_limit: None,
             memory_limit: None,
         };
 
         let yaml = build_overlay_yaml("aoe-agent", &config, "ubuntu:latest");
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
+        let env = &parsed["services"]["aoe-agent"]["environment"];
 
-        assert!(yaml.contains("      PATH: \"/usr/local/bin:/usr/bin\""));
-        assert!(yaml.contains("      MSG: \"hello \\\"world\\\"\""));
+        assert_eq!(env["PATH"].as_str().unwrap(), "/usr/local/bin:/usr/bin");
+        assert_eq!(env["MSG"].as_str().unwrap(), "hello \"world\"");
+        assert_eq!(env["NEWLINE"].as_str().unwrap(), "line1\nline2");
     }
 
     #[test]
@@ -538,8 +589,34 @@ mod tests {
         };
 
         let yaml = build_overlay_yaml("my-custom-agent", &config, "ubuntu:latest");
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
 
-        assert!(yaml.contains("  my-custom-agent:"));
+        assert!(parsed["services"]["my-custom-agent"].is_mapping());
+    }
+
+    #[test]
+    fn test_build_overlay_yaml_env_sorted() {
+        let config = ContainerConfig {
+            working_dir: "/workspace".to_string(),
+            volumes: vec![],
+            anonymous_volumes: vec![],
+            environment: vec![
+                ("ZEBRA".to_string(), "z".to_string()),
+                ("ALPHA".to_string(), "a".to_string()),
+                ("MIDDLE".to_string(), "m".to_string()),
+            ],
+            cpu_limit: None,
+            memory_limit: None,
+        };
+
+        let yaml = build_overlay_yaml("agent", &config, "ubuntu:latest");
+
+        // BTreeMap sorts keys, so ALPHA should come before MIDDLE before ZEBRA
+        let alpha_pos = yaml.find("ALPHA").unwrap();
+        let middle_pos = yaml.find("MIDDLE").unwrap();
+        let zebra_pos = yaml.find("ZEBRA").unwrap();
+        assert!(alpha_pos < middle_pos);
+        assert!(middle_pos < zebra_pos);
     }
 
     #[test]
@@ -602,36 +679,11 @@ mod tests {
     }
 
     #[test]
-    fn test_yaml_quote_value() {
-        assert_eq!(yaml_quote_value("simple"), "\"simple\"");
-        assert_eq!(yaml_quote_value("has:colon"), "\"has:colon\"");
-        assert_eq!(yaml_quote_value("has \"quotes\""), "\"has \\\"quotes\\\"\"");
-        assert_eq!(yaml_quote_value("back\\slash"), "\"back\\\\slash\"");
-    }
-
-    #[test]
     fn test_shell_quote() {
         assert_eq!(shell_quote("simple"), "simple");
         assert_eq!(shell_quote("/path/to/file.yml"), "/path/to/file.yml");
         assert_eq!(shell_quote("with space"), "'with space'");
         assert_eq!(shell_quote("it's-a-me"), "'it'\\''s-a-me'");
         assert_eq!(shell_quote(""), "''");
-    }
-
-    #[test]
-    fn test_yaml_quote_volume_no_spaces() {
-        assert_eq!(yaml_quote_volume("/host:/container"), "/host:/container");
-        assert_eq!(
-            yaml_quote_volume("/host:/container:ro"),
-            "/host:/container:ro"
-        );
-    }
-
-    #[test]
-    fn test_yaml_quote_volume_with_spaces() {
-        assert_eq!(
-            yaml_quote_volume("/my path:/container"),
-            "\"/my path:/container\""
-        );
     }
 }
