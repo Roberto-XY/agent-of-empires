@@ -9,7 +9,8 @@ use std::collections::HashMap;
 use std::fs;
 
 use super::config::{
-    Config, ContainerRuntimeName, DefaultTerminalMode, TmuxMouseMode, TmuxStatusBarMode,
+    ComposeConfig, Config, ContainerRuntimeName, DefaultTerminalMode, TmuxMouseMode,
+    TmuxStatusBarMode,
 };
 use super::get_profile_dir;
 
@@ -132,6 +133,18 @@ pub struct SandboxConfigOverride {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub container_runtime: Option<ContainerRuntimeName>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compose: Option<ComposeConfigOverride>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ComposeConfigOverride {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compose_files: Option<Vec<String>>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_service: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -251,6 +264,15 @@ pub fn apply_sandbox_overrides(
     }
     if let Some(container_runtime) = source.container_runtime {
         target.container_runtime = container_runtime;
+    }
+    if let Some(ref compose_override) = source.compose {
+        let compose = target.compose.get_or_insert_with(ComposeConfig::default);
+        if let Some(ref compose_files) = compose_override.compose_files {
+            compose.compose_files = compose_files.clone();
+        }
+        if let Some(ref agent_service) = compose_override.agent_service {
+            compose.agent_service = agent_service.clone();
+        }
     }
 }
 

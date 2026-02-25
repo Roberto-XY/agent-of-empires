@@ -68,6 +68,8 @@ pub enum FieldKey {
     MountSsh,
     CustomInstruction,
     ContainerRuntime,
+    ComposeFiles,
+    ComposeAgentService,
     // Tmux
     StatusBar,
     Mouse,
@@ -448,9 +450,10 @@ fn build_sandbox_fields(
     let container_runtime_selected = match container_runtime {
         ContainerRuntimeName::Docker => 0,
         ContainerRuntimeName::AppleContainer => 1,
+        ContainerRuntimeName::Compose => 2,
     };
 
-    vec![
+    let mut fields = vec![
         SettingField {
             key: FieldKey::SandboxEnabledByDefault,
             label: "Enabled by Default",
@@ -553,15 +556,55 @@ fn build_sandbox_fields(
         SettingField {
             key: FieldKey::ContainerRuntime,
             label: "Container Runtime",
-            description: "Container runtime for sandboxing (Docker or Apple Container on macOS)",
+            description: "Container runtime for sandboxing (Docker, Apple Container, or Compose)",
             value: FieldValue::Select {
                 selected: container_runtime_selected,
-                options: vec!["Docker".into(), "Apple Container".into()],
+                options: vec!["Docker".into(), "Apple Container".into(), "Compose".into()],
             },
             category: SettingsCategory::Sandbox,
             has_override: o_cr,
         },
-    ]
+    ];
+
+    // Compose-specific fields: only shown when runtime is Compose
+    if container_runtime == ContainerRuntimeName::Compose {
+        let compose_override = sb.and_then(|s| s.compose.as_ref());
+        let global_compose = global.sandbox.compose.as_ref();
+
+        let (compose_files, o_cf) = resolve_value(
+            scope,
+            global_compose
+                .map(|c| c.compose_files.clone())
+                .unwrap_or_default(),
+            compose_override.and_then(|c| c.compose_files.clone()),
+        );
+        let (agent_service, o_as) = resolve_value(
+            scope,
+            global_compose
+                .map(|c| c.agent_service.clone())
+                .unwrap_or_else(|| "aoe-agent".to_string()),
+            compose_override.and_then(|c| c.agent_service.clone()),
+        );
+
+        fields.push(SettingField {
+            key: FieldKey::ComposeFiles,
+            label: "Compose Files",
+            description: "Docker Compose file paths relative to the project root",
+            value: FieldValue::List(compose_files),
+            category: SettingsCategory::Sandbox,
+            has_override: o_cf,
+        });
+        fields.push(SettingField {
+            key: FieldKey::ComposeAgentService,
+            label: "Agent Service Name",
+            description: "Service name for the agent container in the compose overlay",
+            value: FieldValue::Text(agent_service),
+            category: SettingsCategory::Sandbox,
+            has_override: o_as,
+        });
+    }
+
+    fields
 }
 
 fn build_tmux_fields(
@@ -884,8 +927,23 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
         (FieldKey::ContainerRuntime, FieldValue::Select { selected, .. }) => {
             config.sandbox.container_runtime = match selected {
                 0 => ContainerRuntimeName::Docker,
-                _ => ContainerRuntimeName::AppleContainer,
+                1 => ContainerRuntimeName::AppleContainer,
+                _ => ContainerRuntimeName::Compose,
             };
+        }
+        (FieldKey::ComposeFiles, FieldValue::List(ref items)) => {
+            let compose = config
+                .sandbox
+                .compose
+                .get_or_insert_with(crate::session::ComposeConfig::default);
+            compose.compose_files = items.clone();
+        }
+        (FieldKey::ComposeAgentService, FieldValue::Text(ref val)) => {
+            let compose = config
+                .sandbox
+                .compose
+                .get_or_insert_with(crate::session::ComposeConfig::default);
+            compose.agent_service = val.clone();
         }
         // Tmux
         (FieldKey::StatusBar, FieldValue::Select { selected, .. }) => {
@@ -1134,7 +1192,8 @@ fn apply_field_to_profile(field: &SettingField, global: &Config, config: &mut Pr
         (FieldKey::ContainerRuntime, FieldValue::Select { selected, .. }) => {
             let runtime = match selected {
                 0 => ContainerRuntimeName::Docker,
-                _ => ContainerRuntimeName::AppleContainer,
+                1 => ContainerRuntimeName::AppleContainer,
+                _ => ContainerRuntimeName::Compose,
             };
             set_or_clear_override(
                 runtime,
@@ -1142,6 +1201,36 @@ fn apply_field_to_profile(field: &SettingField, global: &Config, config: &mut Pr
                 &mut config.sandbox,
                 |s, val| s.container_runtime = val,
             );
+        }
+        (FieldKey::ComposeFiles, FieldValue::List(ref items)) => {
+            let global_files = global.sandbox.compose.as_ref().map(|c| &c.compose_files);
+            if Some(items) == global_files {
+                if let Some(ref mut c) = config.sandbox.as_mut().and_then(|s| s.compose.as_mut()) {
+                    c.compose_files = None;
+                }
+            } else {
+                let compose = config
+                    .sandbox
+                    .get_or_insert_with(Default::default)
+                    .compose
+                    .get_or_insert_with(Default::default);
+                compose.compose_files = Some(items.clone());
+            }
+        }
+        (FieldKey::ComposeAgentService, FieldValue::Text(ref val)) => {
+            let global_service = global.sandbox.compose.as_ref().map(|c| &c.agent_service);
+            if Some(val) == global_service {
+                if let Some(ref mut c) = config.sandbox.as_mut().and_then(|s| s.compose.as_mut()) {
+                    c.agent_service = None;
+                }
+            } else {
+                let compose = config
+                    .sandbox
+                    .get_or_insert_with(Default::default)
+                    .compose
+                    .get_or_insert_with(Default::default);
+                compose.agent_service = Some(val.clone());
+            }
         }
         // Tmux
         (FieldKey::StatusBar, FieldValue::Select { selected, .. }) => {

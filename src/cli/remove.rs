@@ -3,8 +3,7 @@
 use anyhow::{bail, Result};
 use clap::Args;
 
-use crate::containers;
-use crate::session::{Config, GroupTree, Instance, Storage};
+use crate::session::{Config, ContainerRuntimeName, GroupTree, Instance, Storage};
 
 #[derive(Args)]
 pub struct RemoveArgs {
@@ -126,12 +125,13 @@ pub async fn run(profile: &str, args: RemoveArgs) -> Result<()> {
                 if sandbox.enabled && !args.keep_container {
                     let config = Config::load().ok().unwrap_or_default();
                     if config.sandbox.auto_cleanup {
-                        let container = containers::DockerContainer::from_session_id(&inst.id);
-                        if container.exists().unwrap_or(false) {
-                            if let Err(e) = container.remove(true) {
-                                eprintln!("Warning: failed to remove container: {}", e);
+                        if let Err(e) = inst.cleanup_sandbox(true) {
+                            eprintln!("Warning: failed to clean up sandbox: {}", e);
+                        } else {
+                            if config.sandbox.container_runtime == ContainerRuntimeName::Compose {
+                                println!("Compose stack removed");
                             } else {
-                                println!("✓ Container removed");
+                                println!("Container removed");
                             }
                         }
                     } else {

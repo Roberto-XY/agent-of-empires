@@ -129,10 +129,7 @@ async fn stop_session(profile: &str, args: SessionIdArgs) -> Result<()> {
     let title = inst.title.clone();
     let tmux_session = crate::tmux::Session::new(&inst.id, &inst.title)?;
     let was_running = tmux_session.exists();
-    let had_container = inst.is_sandboxed()
-        && crate::containers::DockerContainer::from_session_id(&inst.id)
-            .is_running()
-            .unwrap_or(false);
+    let had_container = inst.is_sandbox_running().unwrap_or(false);
 
     if !was_running && !had_container {
         println!("Session is not running: {}", title);

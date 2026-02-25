@@ -568,6 +568,20 @@ impl SettingsView {
                     s.container_runtime = None;
                 }
             }
+            FieldKey::ComposeFiles => {
+                if let Some(ref mut s) = config.sandbox {
+                    if let Some(ref mut c) = s.compose {
+                        c.compose_files = None;
+                    }
+                }
+            }
+            FieldKey::ComposeAgentService => {
+                if let Some(ref mut s) = config.sandbox {
+                    if let Some(ref mut c) = s.compose {
+                        c.agent_service = None;
+                    }
+                }
+            }
             // Sound
             FieldKey::SoundEnabled => {
                 if let Some(ref mut s) = config.sound {

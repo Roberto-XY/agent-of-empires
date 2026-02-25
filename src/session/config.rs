@@ -248,6 +248,10 @@ pub struct SandboxConfig {
     /// Container runtime to use for sandboxing (docker or apple_container)
     #[serde(default)]
     pub container_runtime: ContainerRuntimeName,
+
+    /// Docker Compose configuration (only used when container_runtime = "compose")
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compose: Option<ComposeConfig>,
 }
 
 /// Container runtime options for sandboxing
@@ -257,6 +261,48 @@ pub enum ContainerRuntimeName {
     AppleContainer,
     #[default]
     Docker,
+    Compose,
+}
+
+/// Docker Compose-specific configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ComposeConfig {
+    /// Compose file paths, relative to the project root
+    pub compose_files: Vec<String>,
+
+    /// Service name for the agent container in the overlay (default: "aoe-agent")
+    #[serde(default = "default_compose_agent_service")]
+    pub agent_service: String,
+}
+
+fn default_compose_agent_service() -> String {
+    "aoe-agent".to_string()
+}
+
+impl Default for ComposeConfig {
+    fn default() -> Self {
+        Self {
+            compose_files: Vec::new(),
+            agent_service: default_compose_agent_service(),
+        }
+    }
+}
+
+/// Validate that compose configuration is consistent when runtime = Compose
+pub fn validate_compose_config(sandbox: &SandboxConfig) -> Result<(), String> {
+    if sandbox.container_runtime != ContainerRuntimeName::Compose {
+        return Ok(());
+    }
+
+    let compose = sandbox.compose.as_ref().ok_or(
+        "Compose runtime selected but [sandbox.compose] section is not configured".to_string(),
+    )?;
+
+    if compose.compose_files.is_empty() {
+        return Err("At least one compose file is required in [sandbox.compose]".to_string());
+    }
+
+    Ok(())
 }
 
 impl Default for SandboxConfig {
@@ -275,6 +321,7 @@ impl Default for SandboxConfig {
             mount_ssh: false,
             custom_instruction: None,
             container_runtime: ContainerRuntimeName::default(),
+            compose: None,
         }
     }
 }
@@ -863,5 +910,116 @@ mod tests {
         let config: Config = toml::from_str(toml).unwrap();
         assert_eq!(config.diff.default_branch, Some("main".to_string()));
         assert_eq!(config.diff.context_lines, 10);
+    }
+
+    // Tests for ComposeConfig
+    #[test]
+    fn test_compose_config_deserialize() {
+        let toml = r#"
+            [sandbox]
+            container_runtime = "compose"
+
+            [sandbox.compose]
+            compose_files = ["docker-compose.yml", "docker-compose.db.yml"]
+            agent_service = "my-agent"
+        "#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert_eq!(
+            config.sandbox.container_runtime,
+            ContainerRuntimeName::Compose
+        );
+        let compose = config.sandbox.compose.unwrap();
+        assert_eq!(
+            compose.compose_files,
+            vec!["docker-compose.yml", "docker-compose.db.yml"]
+        );
+        assert_eq!(compose.agent_service, "my-agent");
+    }
+
+    #[test]
+    fn test_compose_config_default_agent_service() {
+        let toml = r#"
+            [sandbox]
+            container_runtime = "compose"
+
+            [sandbox.compose]
+            compose_files = ["docker-compose.yml"]
+        "#;
+        let config: Config = toml::from_str(toml).unwrap();
+        let compose = config.sandbox.compose.unwrap();
+        assert_eq!(compose.agent_service, "aoe-agent");
+    }
+
+    #[test]
+    fn test_compose_config_none_by_default() {
+        let config = SandboxConfig::default();
+        assert!(config.compose.is_none());
+    }
+
+    #[test]
+    fn test_compose_config_roundtrip() {
+        let mut config = Config::default();
+        config.sandbox.container_runtime = ContainerRuntimeName::Compose;
+        config.sandbox.compose = Some(ComposeConfig {
+            compose_files: vec!["compose.yml".to_string()],
+            agent_service: "aoe-agent".to_string(),
+        });
+
+        let serialized = toml::to_string_pretty(&config).unwrap();
+        let deserialized: Config = toml::from_str(&serialized).unwrap();
+
+        assert_eq!(
+            deserialized.sandbox.container_runtime,
+            ContainerRuntimeName::Compose
+        );
+        let compose = deserialized.sandbox.compose.unwrap();
+        assert_eq!(compose.compose_files, vec!["compose.yml"]);
+        assert_eq!(compose.agent_service, "aoe-agent");
+    }
+
+    #[test]
+    fn test_validate_compose_config_missing_section() {
+        let sandbox = SandboxConfig {
+            container_runtime: ContainerRuntimeName::Compose,
+            compose: None,
+            ..Default::default()
+        };
+        assert!(validate_compose_config(&sandbox).is_err());
+    }
+
+    #[test]
+    fn test_validate_compose_config_empty_files() {
+        let sandbox = SandboxConfig {
+            container_runtime: ContainerRuntimeName::Compose,
+            compose: Some(ComposeConfig {
+                compose_files: vec![],
+                agent_service: "aoe-agent".to_string(),
+            }),
+            ..Default::default()
+        };
+        assert!(validate_compose_config(&sandbox).is_err());
+    }
+
+    #[test]
+    fn test_validate_compose_config_valid() {
+        let sandbox = SandboxConfig {
+            container_runtime: ContainerRuntimeName::Compose,
+            compose: Some(ComposeConfig {
+                compose_files: vec!["docker-compose.yml".to_string()],
+                agent_service: "aoe-agent".to_string(),
+            }),
+            ..Default::default()
+        };
+        assert!(validate_compose_config(&sandbox).is_ok());
+    }
+
+    #[test]
+    fn test_validate_compose_config_skipped_for_docker() {
+        let sandbox = SandboxConfig {
+            container_runtime: ContainerRuntimeName::Docker,
+            compose: None,
+            ..Default::default()
+        };
+        assert!(validate_compose_config(&sandbox).is_ok());
     }
 }
