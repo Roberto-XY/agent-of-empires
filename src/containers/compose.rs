@@ -2,11 +2,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use anyhow::{bail, Context, Result};
+use crate::cli::truncate_id;
+use crate::containers::error::{DockerError, Result};
+use crate::session::ComposeConfig;
 
 use super::container_interface::ContainerConfig;
-use crate::cli::truncate_id;
-use crate::session::ComposeConfig;
 
 /// Docker Compose engine for managing agent containers via compose overlays.
 ///
@@ -82,20 +82,28 @@ impl ComposeEngine {
 
     /// Generate the overlay YAML file from a ContainerConfig.
     pub fn generate_overlay(&self, config: &ContainerConfig, image: &str) -> Result<()> {
-        let overlay_dir = self.overlay_path.parent().context("Invalid overlay path")?;
+        let overlay_dir = self.overlay_path.parent().ok_or_else(|| {
+            DockerError::ComposeOverlayFailed("Invalid overlay path".to_string())
+        })?;
         fs::create_dir_all(overlay_dir)?;
 
         let yaml = build_overlay_yaml(&self.agent_service, config, image);
 
         // Write atomically via temp file + rename
         let tmp_path = self.overlay_path.with_extension("yaml.tmp");
-        fs::write(&tmp_path, &yaml)
-            .with_context(|| format!("Failed to write overlay to {}", tmp_path.display()))?;
-        fs::rename(&tmp_path, &self.overlay_path).with_context(|| {
-            format!(
-                "Failed to rename overlay to {}",
-                self.overlay_path.display()
-            )
+        fs::write(&tmp_path, &yaml).map_err(|e| {
+            DockerError::ComposeOverlayFailed(format!(
+                "Failed to write overlay to {}: {}",
+                tmp_path.display(),
+                e
+            ))
+        })?;
+        fs::rename(&tmp_path, &self.overlay_path).map_err(|e| {
+            DockerError::ComposeOverlayFailed(format!(
+                "Failed to rename overlay to {}: {}",
+                self.overlay_path.display(),
+                e
+            ))
         })?;
 
         Ok(())
@@ -114,13 +122,10 @@ impl ComposeEngine {
         let output = Command::new("docker")
             .args(["compose", "version"])
             .output()
-            .context("Failed to run 'docker compose version'")?;
+            .map_err(|_| DockerError::ComposeNotInstalled)?;
 
         if !output.status.success() {
-            bail!(
-                "Docker Compose v2 is required but not available. \
-                 Install it via Docker Desktop or the compose plugin."
-            );
+            return Err(DockerError::ComposeNotInstalled);
         }
         Ok(())
     }
@@ -134,7 +139,7 @@ impl ComposeEngine {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            bail!("docker compose up failed: {}", stderr.trim());
+            return Err(DockerError::ComposeCommandFailed(stderr.trim().to_string()));
         }
         Ok(())
     }

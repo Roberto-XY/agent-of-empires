@@ -176,7 +176,7 @@ impl Instance {
                     compose_config,
                     &app_dir,
                 );
-                return engine.is_running();
+                return Ok(engine.is_running()?);
             }
             Ok(false)
         } else {
