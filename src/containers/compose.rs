@@ -1,12 +1,15 @@
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::mpsc;
 
 use serde::Serialize;
 
 use crate::cli::truncate_id;
 use crate::containers::error::{DockerError, Result};
+use crate::session::repo_config::HookProgress;
 use crate::session::ComposeConfig;
 
 use super::container_interface::ContainerConfig;
@@ -135,33 +138,38 @@ impl ComposeEngine {
     }
 
     /// Start the compose stack: `docker compose ... up -d`
-    pub fn up(&self) -> Result<()> {
+    pub fn up(&self, progress: Option<&mpsc::Sender<HookProgress>>) -> Result<()> {
         let mut args = self.compose_base_args();
         args.extend(["up".to_string(), "-d".to_string()]);
 
-        let output = Command::new("docker").args(&args).output()?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(DockerError::ComposeCommandFailed(stderr.trim().to_string()));
+        if let Some(tx) = progress {
+            let _ = tx.send(HookProgress::Started("docker compose up".to_string()));
         }
-        Ok(())
+
+        run_compose_streamed(&args, progress)
     }
 
     /// Stop and remove the compose stack: `docker compose ... down [--volumes]`
-    pub fn down(&self, remove_volumes: bool) -> Result<()> {
+    pub fn down(
+        &self,
+        remove_volumes: bool,
+        progress: Option<&mpsc::Sender<HookProgress>>,
+    ) -> Result<()> {
         let mut args = self.compose_base_args();
         args.push("down".to_string());
         if remove_volumes {
             args.push("--volumes".to_string());
         }
 
-        let output = Command::new("docker").args(&args).output()?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            tracing::warn!("docker compose down failed: {}", stderr.trim());
+        if let Some(tx) = progress {
+            let _ = tx.send(HookProgress::Started("docker compose down".to_string()));
         }
+
+        let result = run_compose_streamed(&args, progress);
+        if let Err(ref e) = result {
+            tracing::warn!("docker compose down failed: {}", e);
+        }
+        // down() historically swallows errors -- preserve that behavior
         Ok(())
     }
 
@@ -229,6 +237,52 @@ impl ComposeEngine {
 
         let output = Command::new("docker").args(&args).output()?;
         Ok(output)
+    }
+}
+
+/// Run a docker compose command, optionally streaming stderr to a progress channel.
+///
+/// When `progress` is `Some`, stderr is piped and sent line-by-line. When `None`,
+/// the command runs with captured output (current behavior).
+/// Returns the collected stderr on failure for error reporting.
+fn run_compose_streamed(
+    args: &[String],
+    progress: Option<&mpsc::Sender<HookProgress>>,
+) -> Result<()> {
+    match progress {
+        Some(tx) => {
+            let mut child = Command::new("docker")
+                .args(args)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::piped())
+                .spawn()?;
+
+            let mut collected_stderr = String::new();
+            if let Some(stderr) = child.stderr.take() {
+                let reader = std::io::BufReader::new(stderr);
+                for line in reader.lines().map_while(|r| r.ok()) {
+                    collected_stderr.push_str(&line);
+                    collected_stderr.push('\n');
+                    let _ = tx.send(HookProgress::Output(line));
+                }
+            }
+
+            let status = child.wait()?;
+            if !status.success() {
+                return Err(DockerError::ComposeCommandFailed(
+                    collected_stderr.trim().to_string(),
+                ));
+            }
+            Ok(())
+        }
+        None => {
+            let output = Command::new("docker").args(args).output()?;
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(DockerError::ComposeCommandFailed(stderr.trim().to_string()));
+            }
+            Ok(())
+        }
     }
 }
 

@@ -1,6 +1,7 @@
 //! Session instance definition and operations
 
 use std::path::Path;
+use std::sync::mpsc;
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
@@ -15,6 +16,7 @@ use crate::tmux;
 
 use super::container_config;
 use super::environment::{build_docker_env_args, shell_escape};
+use super::repo_config::HookProgress;
 
 /// Abstraction over Docker container and Compose engine exec commands.
 /// Both runtimes produce exec command strings; this enum dispatches transparently.
@@ -203,7 +205,7 @@ impl Instance {
 
         match self.compose_engine(cfg)? {
             Some(engine) => {
-                if let Err(e) = engine.down(remove_volumes) {
+                if let Err(e) = engine.down(remove_volumes, None) {
                     tracing::warn!("compose down failed during cleanup: {}", e);
                 }
                 engine.cleanup_overlay()?;
@@ -295,7 +297,7 @@ impl Instance {
             anyhow::bail!("Cannot create container terminal for non-sandboxed session");
         }
 
-        let runtime = self.get_container_for_instance()?;
+        let runtime = self.get_container_for_instance(None)?;
         let sandbox = self.sandbox_info.as_ref().unwrap();
 
         let env_args = build_docker_env_args(sandbox);
@@ -412,7 +414,7 @@ impl Instance {
         };
 
         let cmd = if self.is_sandboxed() {
-            let runtime = self.get_container_for_instance()?;
+            let runtime = self.get_container_for_instance(None)?;
             // Run on_launch hooks inside the container
             if let Some(ref hook_cmds) = on_launch_hooks {
                 if let Some(ref sandbox) = self.sandbox_info {
@@ -534,7 +536,10 @@ impl Instance {
         self.apply_session_tmux_options(&name, &format!("{} (terminal)", self.title));
     }
 
-    pub fn get_container_for_instance(&mut self) -> Result<SandboxRuntime> {
+    pub fn get_container_for_instance(
+        &mut self,
+        progress: Option<&mpsc::Sender<HookProgress>>,
+    ) -> Result<SandboxRuntime> {
         let sandbox = self
             .sandbox_info
             .as_ref()
@@ -543,7 +548,7 @@ impl Instance {
         let cfg = super::config::Config::load()?;
 
         if cfg.sandbox.container_runtime == ContainerRuntimeName::Compose {
-            return self.ensure_compose_running(&cfg);
+            return self.ensure_compose_running(&cfg, progress);
         }
 
         let image = &sandbox.image;
@@ -575,7 +580,11 @@ impl Instance {
         Ok(SandboxRuntime::Container(container))
     }
 
-    fn ensure_compose_running(&mut self, cfg: &super::config::Config) -> Result<SandboxRuntime> {
+    fn ensure_compose_running(
+        &mut self,
+        cfg: &super::config::Config,
+        progress: Option<&mpsc::Sender<HookProgress>>,
+    ) -> Result<SandboxRuntime> {
         validate_compose_config(&cfg.sandbox).map_err(|e| anyhow::anyhow!("{}", e))?;
 
         ComposeEngine::check_compose_available()?;
@@ -595,7 +604,7 @@ impl Instance {
         }
 
         if engine.exists()? {
-            engine.up()?;
+            engine.up(progress)?;
             container_config::refresh_agent_configs();
             return Ok(SandboxRuntime::Compose(engine));
         }
@@ -605,7 +614,7 @@ impl Instance {
         let config = self.build_container_config()?;
         engine.generate_overlay(&config, image)?;
         // Compose pulls the image automatically during `up`; no explicit pull needed.
-        engine.up()?;
+        engine.up(progress)?;
 
         if let Some(ref mut sandbox) = self.sandbox_info {
             sandbox.created_at = Some(Utc::now());
@@ -667,7 +676,7 @@ impl Instance {
             match self.compose_engine(cfg)? {
                 Some(engine) => {
                     // down without --volumes: stop but preserve data for restart
-                    engine.down(false)?;
+                    engine.down(false, None)?;
                 }
                 None => {
                     let container = containers::DockerContainer::from_session_id(&self.id);
