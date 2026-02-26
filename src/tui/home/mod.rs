@@ -378,12 +378,23 @@ impl HomeView {
         data: NewSessionData,
         hooks: Option<crate::session::HooksConfig>,
     ) {
-        let has_hooks = hooks
+        let mut show_creation_progress = hooks
             .as_ref()
             .is_some_and(|h| !h.on_create.is_empty() || !h.on_launch.is_empty());
+
+        // Also show detailed progress if using compose engine, as it streams output
+        if !show_creation_progress && data.sandbox {
+            if let Ok(config) = resolve_config(self.storage.profile()) {
+                if config.sandbox.container_runtime == crate::session::ContainerRuntimeName::Compose
+                {
+                    show_creation_progress = true;
+                }
+            }
+        }
+
         if let Some(dialog) = &mut self.new_dialog {
             dialog.set_loading(true);
-            dialog.set_has_hooks(has_hooks);
+            dialog.set_show_creation_progress(show_creation_progress);
         }
 
         self.creation_cancelled = false;
@@ -491,9 +502,9 @@ impl HomeView {
             }
 
             if dialog.is_loading() {
-                // Drain all pending hook progress messages
+                // Drain all pending streamed creation progress messages.
                 while let Some(progress) = self.creation_poller.try_recv_progress() {
-                    dialog.push_hook_progress(progress);
+                    dialog.push_creation_progress(progress);
                     changed = true;
                 }
             }

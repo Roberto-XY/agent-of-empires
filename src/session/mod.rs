@@ -8,6 +8,7 @@ mod environment;
 mod groups;
 mod instance;
 pub mod profile_config;
+pub mod progress;
 pub mod repo_config;
 mod storage;
 

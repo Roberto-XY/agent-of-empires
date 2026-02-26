@@ -9,7 +9,7 @@ use serde::Serialize;
 
 use crate::cli::truncate_id;
 use crate::containers::error::{DockerError, Result};
-use crate::session::repo_config::HookProgress;
+use crate::session::progress::{CreationProgress, CreationProgressSource};
 use crate::session::ComposeConfig;
 
 use super::container_interface::ContainerConfig;
@@ -138,12 +138,15 @@ impl ComposeEngine {
     }
 
     /// Start the compose stack: `docker compose ... up -d`
-    pub fn up(&self, progress: Option<&mpsc::Sender<HookProgress>>) -> Result<()> {
+    pub fn up(&self, progress: Option<&mpsc::Sender<CreationProgress>>) -> Result<()> {
         let mut args = self.compose_base_args();
         args.extend(["up".to_string(), "-d".to_string()]);
 
         if let Some(tx) = progress {
-            let _ = tx.send(HookProgress::Started("docker compose up".to_string()));
+            let _ = tx.send(CreationProgress::StepStarted {
+                source: CreationProgressSource::Compose,
+                label: "docker compose up".to_string(),
+            });
         }
 
         run_compose_streamed(&args, progress)
@@ -153,7 +156,7 @@ impl ComposeEngine {
     pub fn down(
         &self,
         remove_volumes: bool,
-        progress: Option<&mpsc::Sender<HookProgress>>,
+        progress: Option<&mpsc::Sender<CreationProgress>>,
     ) -> Result<()> {
         let mut args = self.compose_base_args();
         args.push("down".to_string());
@@ -162,7 +165,10 @@ impl ComposeEngine {
         }
 
         if let Some(tx) = progress {
-            let _ = tx.send(HookProgress::Started("docker compose down".to_string()));
+            let _ = tx.send(CreationProgress::StepStarted {
+                source: CreationProgressSource::Compose,
+                label: "docker compose down".to_string(),
+            });
         }
 
         let result = run_compose_streamed(&args, progress);
@@ -247,7 +253,7 @@ impl ComposeEngine {
 /// Returns the collected stderr on failure for error reporting.
 fn run_compose_streamed(
     args: &[String],
-    progress: Option<&mpsc::Sender<HookProgress>>,
+    progress: Option<&mpsc::Sender<CreationProgress>>,
 ) -> Result<()> {
     match progress {
         Some(tx) => {
@@ -263,7 +269,10 @@ fn run_compose_streamed(
                 for line in reader.lines().map_while(|r| r.ok()) {
                     collected_stderr.push_str(&line);
                     collected_stderr.push('\n');
-                    let _ = tx.send(HookProgress::Output(line));
+                    let _ = tx.send(CreationProgress::Output {
+                        source: CreationProgressSource::Compose,
+                        line,
+                    });
                 }
             }
 
@@ -493,8 +502,8 @@ mod tests {
             "ghcr.io/njbrake/aoe-sandbox:latest"
         );
         assert_eq!(service["command"].as_str().unwrap(), "sleep infinity");
-        assert_eq!(service["stdin_open"].as_bool().unwrap(), true);
-        assert_eq!(service["tty"].as_bool().unwrap(), true);
+        assert!(service["stdin_open"].as_bool().unwrap());
+        assert!(service["tty"].as_bool().unwrap());
         assert_eq!(
             service["working_dir"].as_str().unwrap(),
             "/workspace/myproject"

@@ -14,7 +14,7 @@ use tui_input::Input;
 use super::DialogResult;
 use crate::containers::{self, ContainerRuntimeInterface};
 use crate::session::config::{DefaultTerminalMode, SandboxConfig};
-use crate::session::repo_config::HookProgress;
+use crate::session::progress::{CreationProgress, CreationProgressSource};
 #[cfg(test)]
 use crate::session::Config;
 use crate::session::{civilizations, resolve_config};
@@ -151,12 +151,14 @@ pub struct NewSessionDialog {
     pub(super) spinner_frame: usize,
     /// Whether a Docker image pull will be needed (image not present locally)
     pub(super) needs_image_pull: bool,
-    /// Whether hooks are being executed during loading
-    pub(super) has_hooks: bool,
-    /// The currently running hook command
-    pub(super) current_hook: Option<String>,
-    /// Accumulated output lines from hook execution
-    pub(super) hook_output: Vec<String>,
+    /// Whether detailed streamed progress should be shown during loading.
+    pub(super) show_creation_progress: bool,
+    /// The currently running step label (hook command, compose command, etc).
+    pub(super) current_step: Option<String>,
+    /// Source of the current step for contextual labeling in the loading dialog.
+    pub(super) current_step_source: Option<CreationProgressSource>,
+    /// Accumulated streamed output lines from session creation.
+    pub(super) creation_output: Vec<String>,
     /// Temporary highlight state for invalid path input.
     pub(super) path_invalid_flash_until: Option<Instant>,
     /// Ghost text completion for the path field (fish-shell style).
@@ -358,27 +360,33 @@ impl NewSessionDialog {
             loading: false,
             spinner_frame: 0,
             needs_image_pull: false,
-            has_hooks: false,
-            current_hook: None,
-            hook_output: Vec::new(),
+            show_creation_progress: false,
+            current_step: None,
+            current_step_source: None,
+            creation_output: Vec::new(),
             path_invalid_flash_until: None,
             path_ghost: None,
         }
     }
 
-    /// Set whether hooks will be executed during session creation
-    pub fn set_has_hooks(&mut self, has_hooks: bool) {
-        self.has_hooks = has_hooks;
+    /// Set whether detailed creation progress should be shown.
+    pub fn set_show_creation_progress(&mut self, show: bool) {
+        self.show_creation_progress = show;
     }
 
-    /// Push a hook progress message into the dialog state
-    pub fn push_hook_progress(&mut self, progress: HookProgress) {
+    /// Push a creation progress message into the dialog state.
+    pub fn push_creation_progress(&mut self, progress: CreationProgress) {
+        self.show_creation_progress = true;
         match progress {
-            HookProgress::Started(cmd) => {
-                self.current_hook = Some(cmd);
+            CreationProgress::StepStarted { source, label } => {
+                self.current_step = Some(label);
+                self.current_step_source = Some(source);
             }
-            HookProgress::Output(line) => {
-                self.hook_output.push(line);
+            CreationProgress::Output { source, line } => {
+                if self.current_step_source.is_none() {
+                    self.current_step_source = Some(source);
+                }
+                self.creation_output.push(line);
             }
         }
     }
@@ -471,9 +479,10 @@ impl NewSessionDialog {
             loading: false,
             spinner_frame: 0,
             needs_image_pull: false,
-            has_hooks: false,
-            current_hook: None,
-            hook_output: Vec::new(),
+            show_creation_progress: false,
+            current_step: None,
+            current_step_source: None,
+            creation_output: Vec::new(),
             path_invalid_flash_until: None,
             path_ghost: None,
         }
@@ -519,9 +528,10 @@ impl NewSessionDialog {
             loading: false,
             spinner_frame: 0,
             needs_image_pull: false,
-            has_hooks: false,
-            current_hook: None,
-            hook_output: Vec::new(),
+            show_creation_progress: false,
+            current_step: None,
+            current_step_source: None,
+            creation_output: Vec::new(),
             path_invalid_flash_until: None,
             path_ghost: None,
         }

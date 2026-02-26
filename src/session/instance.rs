@@ -16,7 +16,7 @@ use crate::tmux;
 
 use super::container_config;
 use super::environment::{build_docker_env_args, shell_escape};
-use super::repo_config::HookProgress;
+use super::progress::CreationProgress;
 
 /// Abstraction over Docker container and Compose engine exec commands.
 /// Both runtimes produce exec command strings; this enum dispatches transparently.
@@ -538,7 +538,7 @@ impl Instance {
 
     pub fn get_container_for_instance(
         &mut self,
-        progress: Option<&mpsc::Sender<HookProgress>>,
+        progress: Option<&mpsc::Sender<CreationProgress>>,
     ) -> Result<SandboxRuntime> {
         let sandbox = self
             .sandbox_info
@@ -583,7 +583,7 @@ impl Instance {
     fn ensure_compose_running(
         &mut self,
         cfg: &super::config::Config,
-        progress: Option<&mpsc::Sender<HookProgress>>,
+        progress: Option<&mpsc::Sender<CreationProgress>>,
     ) -> Result<SandboxRuntime> {
         validate_compose_config(&cfg.sandbox).map_err(|e| anyhow::anyhow!("{}", e))?;
 
