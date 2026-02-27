@@ -749,4 +749,150 @@ mod tests {
         assert_eq!(shell_quote("it's-a-me"), "'it'\\''s-a-me'");
         assert_eq!(shell_quote(""), "''");
     }
+
+    #[test]
+    fn test_generate_overlay_writes_valid_yaml() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let overlay_path = tmp
+            .path()
+            .join("compose-overlays")
+            .join("test.override.yaml");
+        let engine = ComposeEngine {
+            project_name: "aoe-test1234".to_string(),
+            compose_files: vec![PathBuf::from("/project/compose.yml")],
+            overlay_path: overlay_path.clone(),
+            agent_service: "aoe-agent".to_string(),
+        };
+
+        let config = ContainerConfig {
+            working_dir: "/workspace".to_string(),
+            volumes: vec![VolumeMount {
+                host_path: "/home/user/project".to_string(),
+                container_path: "/workspace".to_string(),
+                read_only: false,
+            }],
+            anonymous_volumes: vec![],
+            environment: vec![("TERM".to_string(), "xterm-256color".to_string())],
+            cpu_limit: None,
+            memory_limit: None,
+        };
+
+        engine
+            .generate_overlay(&config, "ubuntu:latest")
+            .expect("generate_overlay should succeed");
+
+        assert!(overlay_path.exists(), "overlay file should be written");
+        let content = fs::read_to_string(&overlay_path).unwrap();
+        let parsed: serde_yaml::Value =
+            serde_yaml::from_str(&content).expect("overlay should be valid YAML");
+        assert_eq!(
+            parsed["services"]["aoe-agent"]["image"].as_str().unwrap(),
+            "ubuntu:latest"
+        );
+    }
+
+    #[test]
+    fn test_generate_overlay_creates_parent_dirs() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let overlay_path = tmp
+            .path()
+            .join("deeply")
+            .join("nested")
+            .join("overlays")
+            .join("test.override.yaml");
+        let engine = ComposeEngine {
+            project_name: "aoe-nested".to_string(),
+            compose_files: vec![PathBuf::from("/project/compose.yml")],
+            overlay_path: overlay_path.clone(),
+            agent_service: "aoe-agent".to_string(),
+        };
+
+        let config = ContainerConfig {
+            working_dir: "/workspace".to_string(),
+            volumes: vec![],
+            anonymous_volumes: vec![],
+            environment: vec![],
+            cpu_limit: None,
+            memory_limit: None,
+        };
+
+        engine
+            .generate_overlay(&config, "alpine:latest")
+            .expect("generate_overlay should create parent dirs");
+        assert!(overlay_path.exists());
+    }
+
+    #[test]
+    fn test_cleanup_overlay_removes_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let overlay_path = tmp.path().join("overlays").join("test.override.yaml");
+        let engine = ComposeEngine {
+            project_name: "aoe-cleanup".to_string(),
+            compose_files: vec![PathBuf::from("/project/compose.yml")],
+            overlay_path: overlay_path.clone(),
+            agent_service: "aoe-agent".to_string(),
+        };
+
+        let config = ContainerConfig {
+            working_dir: "/workspace".to_string(),
+            volumes: vec![],
+            anonymous_volumes: vec![],
+            environment: vec![],
+            cpu_limit: None,
+            memory_limit: None,
+        };
+
+        engine.generate_overlay(&config, "alpine:latest").unwrap();
+        assert!(overlay_path.exists());
+
+        engine
+            .cleanup_overlay()
+            .expect("cleanup_overlay should succeed");
+        assert!(!overlay_path.exists(), "overlay file should be removed");
+    }
+
+    #[test]
+    fn test_cleanup_overlay_noop_when_missing() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let overlay_path = tmp.path().join("nonexistent.override.yaml");
+        let engine = ComposeEngine {
+            project_name: "aoe-noop".to_string(),
+            compose_files: vec![PathBuf::from("/project/compose.yml")],
+            overlay_path,
+            agent_service: "aoe-agent".to_string(),
+        };
+
+        engine
+            .cleanup_overlay()
+            .expect("cleanup_overlay should succeed when file doesn't exist");
+    }
+
+    #[test]
+    fn test_build_overlay_yaml_empty_volumes_and_env() {
+        let config = ContainerConfig {
+            working_dir: "/workspace".to_string(),
+            volumes: vec![],
+            anonymous_volumes: vec![],
+            environment: vec![],
+            cpu_limit: None,
+            memory_limit: None,
+        };
+
+        let yaml = build_overlay_yaml("aoe-agent", &config, "ubuntu:latest");
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
+        let service = &parsed["services"]["aoe-agent"];
+
+        // With skip_serializing_if, empty volumes and environment should be absent
+        assert!(
+            service["volumes"].is_null(),
+            "empty volumes should be omitted"
+        );
+        assert!(
+            service["environment"].is_null(),
+            "empty environment should be omitted"
+        );
+        // Core fields should still be present
+        assert_eq!(service["image"].as_str().unwrap(), "ubuntu:latest");
+        assert_eq!(service["command"].as_str().unwrap(), "sleep infinity");
+    }
 }

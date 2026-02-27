@@ -1,8 +1,9 @@
 //! Integration tests for the config merge pipeline: global + profile overrides with real TOML files.
 
 use agent_of_empires::session::{
-    load_profile_config, merge_configs, save_config, save_profile_config, Config, ProfileConfig,
-    SandboxConfigOverride, ThemeConfigOverride, UpdatesConfigOverride, WorktreeConfigOverride,
+    load_profile_config, merge_configs, save_config, save_profile_config, ComposeConfig,
+    ComposeConfigOverride, Config, ContainerRuntimeName, ProfileConfig, SandboxConfigOverride,
+    ThemeConfigOverride, UpdatesConfigOverride, WorktreeConfigOverride,
 };
 use anyhow::Result;
 use serial_test::serial;
@@ -171,6 +172,87 @@ fn test_empty_profile_config_returns_global() -> Result<()> {
         merged.updates.check_interval_hours, 99,
         "With no profile overrides, merged config should equal global"
     );
+
+    Ok(())
+}
+
+#[test]
+#[serial]
+fn test_compose_config_toml_round_trip() -> Result<()> {
+    let _temp = setup_temp_home();
+
+    let mut config = Config::default();
+    config.sandbox.container_runtime = ContainerRuntimeName::Compose;
+    config.sandbox.compose = Some(ComposeConfig {
+        compose_files: vec![
+            "docker-compose.yml".to_string(),
+            "docker-compose.db.yml".to_string(),
+        ],
+        agent_service: "my-agent".to_string(),
+    });
+
+    save_config(&config)?;
+    let loaded = Config::load()?;
+
+    assert_eq!(
+        loaded.sandbox.container_runtime,
+        ContainerRuntimeName::Compose
+    );
+    let compose = loaded
+        .sandbox
+        .compose
+        .expect("compose section should survive round-trip");
+    assert_eq!(
+        compose.compose_files,
+        vec!["docker-compose.yml", "docker-compose.db.yml"]
+    );
+    assert_eq!(compose.agent_service, "my-agent");
+
+    Ok(())
+}
+
+#[test]
+#[serial]
+fn test_compose_profile_override_via_toml() -> Result<()> {
+    let _temp = setup_temp_home();
+
+    // Global: Docker runtime (default)
+    let global = Config::default();
+    assert_eq!(
+        global.sandbox.container_runtime,
+        ContainerRuntimeName::Docker
+    );
+    save_config(&global)?;
+
+    // Profile: override to Compose
+    let profile = ProfileConfig {
+        sandbox: Some(SandboxConfigOverride {
+            container_runtime: Some(ContainerRuntimeName::Compose),
+            compose: Some(ComposeConfigOverride {
+                compose_files: Some(vec!["compose.yaml".to_string()]),
+                agent_service: None, // should get default
+            }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    save_profile_config("default", &profile)?;
+
+    let loaded_global = Config::load()?;
+    let loaded_profile = load_profile_config("default")?;
+    let merged = merge_configs(loaded_global, &loaded_profile);
+
+    assert_eq!(
+        merged.sandbox.container_runtime,
+        ContainerRuntimeName::Compose,
+        "Profile Compose override should win"
+    );
+    let compose = merged
+        .sandbox
+        .compose
+        .expect("compose section should be populated");
+    assert_eq!(compose.compose_files, vec!["compose.yaml"]);
+    assert_eq!(compose.agent_service, "aoe-agent"); // default from get_or_insert_with
 
     Ok(())
 }

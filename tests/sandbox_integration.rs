@@ -5,8 +5,11 @@
 //! - Container cleanup when deleting a sandboxed session
 //! - Docker availability validation
 
-use agent_of_empires::containers::{self, ContainerRuntimeInterface, DockerContainer};
-use agent_of_empires::session::{Instance, SandboxInfo, Storage};
+use agent_of_empires::containers::compose::ComposeEngine;
+use agent_of_empires::containers::{
+    self, ContainerConfig, ContainerRuntimeInterface, DockerContainer,
+};
+use agent_of_empires::session::{ComposeConfig, Instance, SandboxInfo, Storage};
 
 fn docker_available() -> bool {
     let rt = containers::get_container_runtime();
@@ -192,4 +195,74 @@ fn test_container_force_remove() {
     // Force remove while running
     container.remove(true).unwrap();
     assert!(!container.exists().unwrap());
+}
+
+#[test]
+#[ignore = "requires Docker daemon and docker compose"]
+fn test_compose_lifecycle() {
+    if !docker_available() {
+        eprintln!("Skipping: Docker not available");
+        return;
+    }
+    if ComposeEngine::check_compose_available().is_err() {
+        eprintln!("Skipping: docker compose not available");
+        return;
+    }
+
+    let session_id = format!(
+        "testcompose{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+    );
+
+    let project_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let tmp = tempfile::TempDir::new().unwrap();
+
+    let compose_config = ComposeConfig {
+        compose_files: vec!["tests/fixtures/compose-nginx/docker-compose.yml".to_string()],
+        agent_service: "aoe-agent".to_string(),
+    };
+
+    let engine = ComposeEngine::new(&session_id, project_path, &compose_config, tmp.path());
+
+    let config = ContainerConfig {
+        working_dir: "/workspace".to_string(),
+        volumes: vec![],
+        anonymous_volumes: vec![],
+        environment: vec![],
+        cpu_limit: None,
+        memory_limit: None,
+    };
+
+    // Generate overlay
+    engine
+        .generate_overlay(&config, "alpine:latest")
+        .expect("generate_overlay should succeed");
+    assert!(engine.overlay_path.exists());
+
+    // Start compose stack
+    engine.up(None).expect("compose up should succeed");
+
+    // Verify running
+    assert!(
+        engine.is_running().expect("is_running should not error"),
+        "agent service should be running after up"
+    );
+    assert!(
+        engine.exists().expect("exists should not error"),
+        "agent service should exist after up"
+    );
+
+    // Tear down
+    engine
+        .down(true, None)
+        .expect("compose down should succeed");
+
+    // Clean up overlay
+    engine
+        .cleanup_overlay()
+        .expect("cleanup_overlay should succeed");
+    assert!(!engine.overlay_path.exists());
 }

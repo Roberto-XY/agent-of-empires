@@ -864,6 +864,64 @@ mod tests {
     }
 
     #[test]
+    fn test_repo_config_with_compose_deserialize() {
+        let toml = r#"
+            [sandbox]
+            container_runtime = "compose"
+
+            [sandbox.compose]
+            compose_files = ["docker-compose.yml", "docker-compose.dev.yml"]
+            agent_service = "my-agent"
+        "#;
+
+        let config: RepoConfig = toml::from_str(toml).unwrap();
+        let sandbox = config.sandbox.unwrap();
+        assert_eq!(
+            sandbox.container_runtime,
+            Some(super::super::config::ContainerRuntimeName::Compose)
+        );
+        let compose = sandbox.compose.unwrap();
+        assert_eq!(
+            compose.compose_files,
+            Some(vec![
+                "docker-compose.yml".to_string(),
+                "docker-compose.dev.yml".to_string()
+            ])
+        );
+        assert_eq!(compose.agent_service, Some("my-agent".to_string()));
+    }
+
+    #[test]
+    fn test_merge_repo_config_compose_override() {
+        let config = Config::default();
+        assert_eq!(
+            config.sandbox.container_runtime,
+            super::super::config::ContainerRuntimeName::Docker
+        );
+
+        let repo = RepoConfig {
+            sandbox: Some(SandboxConfigOverride {
+                container_runtime: Some(super::super::config::ContainerRuntimeName::Compose),
+                compose: Some(super::super::profile_config::ComposeConfigOverride {
+                    compose_files: Some(vec!["compose.yaml".to_string()]),
+                    agent_service: Some("aoe-agent".to_string()),
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let merged = merge_repo_config(config, &repo);
+        assert_eq!(
+            merged.sandbox.container_runtime,
+            super::super::config::ContainerRuntimeName::Compose
+        );
+        let compose = merged.sandbox.compose.unwrap();
+        assert_eq!(compose.compose_files, vec!["compose.yaml"]);
+        assert_eq!(compose.agent_service, "aoe-agent");
+    }
+
+    #[test]
     fn test_merge_repo_config_preserves_unset_fields() {
         let mut config = Config::default();
         config.sandbox.enabled_by_default = true;
