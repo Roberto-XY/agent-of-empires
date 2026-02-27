@@ -98,6 +98,7 @@ Add a new session
 * `-b`, `--new-branch` -- Create a new branch (use with --worktree)
 * `-s`, `--sandbox` -- Run session in Docker sandbox
 * `--sandbox-image <SANDBOX_IMAGE>` -- Custom Docker image for sandbox (implies --sandbox)
+* `-y`, `--yolo` -- Enable YOLO mode (skip permission prompts)
 * `--trust-hooks` -- Automatically trust repository hooks without prompting
 
 

@@ -90,11 +90,12 @@ delete_branch_on_cleanup = false
 | `{branch}` | Branch name (slashes converted to hyphens) |
 | `{session-id}` | First 8 characters of session UUID |
 
-## Sandbox (Docker)
+## Sandbox (Docker & Compose)
 
 ```toml
 [sandbox]
 enabled_by_default = false
+container_runtime = "docker"   # "docker", "compose", or "apple_container"
 default_image = "ghcr.io/njbrake/aoe-sandbox:latest"
 cpu_limit = "4"
 memory_limit = "8g"
@@ -104,11 +105,16 @@ extra_volumes = []
 volume_ignores = ["node_modules", "target"]
 auto_cleanup = true
 default_terminal_mode = "host"
+
+[sandbox.compose]
+compose_files = ["compose.yaml"]
+agent_service = "aoe-agent"
 ```
 
 | Option | Default | Description |
 |--------|---------|-------------|
 | `enabled_by_default` | `false` | Auto-enable sandbox for new sessions |
+| `container_runtime` | `"docker"` | Runtime engine: `"docker"` (standard), `"compose"` (multi-service), or `"apple_container"` (macOS native) |
 | `default_image` | `ghcr.io/njbrake/aoe-sandbox:latest` | Docker image for containers |
 | `cpu_limit` | (none) | CPU limit (e.g., `"4"`) |
 | `memory_limit` | (none) | Memory limit (e.g., `"8g"`) |
@@ -118,6 +124,15 @@ default_terminal_mode = "host"
 | `volume_ignores` | `[]` | Directories to exclude from the project mount via anonymous volumes |
 | `auto_cleanup` | `true` | Remove containers when sessions are deleted |
 | `default_terminal_mode` | `"host"` | Paired terminal location: `"host"` or `"container"` |
+
+### Compose Settings (`[sandbox.compose]`)
+
+Only used when `container_runtime = "compose"`.
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `compose_files` | `["compose.yaml"]` | List of compose files relative to project root |
+| `agent_service` | `"aoe-agent"` | Name of the service in the generated overlay for the agent |
 
 ### environment vs environment_values
 

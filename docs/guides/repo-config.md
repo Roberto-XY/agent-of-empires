@@ -49,6 +49,7 @@ Override sandbox settings for this repo:
 ```toml
 [sandbox]
 enabled_by_default = true
+container_runtime = "compose"   # "docker" or "compose"
 default_image = "ghcr.io/njbrake/aoe-dev-sandbox:latest"
 environment = ["NODE_ENV", "DATABASE_URL"]
 environment_values = { CUSTOM_KEY = "value" }
@@ -58,6 +59,10 @@ cpu_limit = "8"
 memory_limit = "16g"
 auto_cleanup = true
 default_terminal_mode = "host"   # "host" or "container"
+
+[sandbox.compose]
+compose_files = ["docker-compose.yml", "docker-compose.dev.yml"]
+agent_service = "my-agent"
 ```
 
 ### Worktree

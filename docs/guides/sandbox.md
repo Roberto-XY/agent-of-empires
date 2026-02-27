@@ -82,6 +82,69 @@ environment = ["ANTHROPIC_API_KEY"]
 | `~/.ssh/` | `/root/.ssh/` | RO | SSH keys |
 | `~/.config/opencode/` | `/root/.config/opencode/` | RO | OpenCode config |
 
+## Docker Compose Sandboxing
+
+For projects that require multiple services (like a database, Redis, or an API) to run alongside the AI agent, AOE supports **Docker Compose sandboxing**. 
+
+Instead of a single isolated container, AOE manages a full Compose stack for each session. It achieves this by generating a **Compose Overlay**—a temporary override file that adds the AI agent service to your existing Compose project.
+
+### When to use Compose
+- Your project has a `docker-compose.yml` defining required dependencies.
+- You need the agent to interact with other services on a shared Docker network.
+- You want to use Compose features not directly exposed in AOE's basic sandbox config (like `depends_on` or custom `networks`).
+
+### Configuration
+
+To enable Compose, set `container_runtime` to `"compose"` and provide the paths to your compose files:
+
+```toml
+[sandbox]
+container_runtime = "compose"
+
+[sandbox.compose]
+# Paths are relative to the project root
+compose_files = ["docker-compose.yml", "docker-compose.dev.yml"]
+# Optional: name of the agent service in the overlay (default: "aoe-agent")
+agent_service = "my-agent"
+```
+
+### How it Works
+
+1. **Overlay Generation:** When you start a session, AOE creates a temporary `override.yaml` in its app directory. This file defines the agent service using the image, volumes, and environment variables from your AOE configuration.
+2. **Stack Lifecycle:** AOE runs `docker compose -f <your-files> -f <overlay> -p <project-name> up -d`. The project name is unique to the AOE session (`aoe-<id>`), ensuring isolation between parallel sessions.
+3. **Execution:** AOE uses `docker compose exec` to run the AI agent inside the designated service.
+4. **Cleanup:** When the session is removed, AOE runs `docker compose down` and deletes the temporary overlay.
+
+### Best Practices & Tips
+
+#### Avoid Host Port Conflicts
+If your `docker-compose.yml` binds services to specific host ports (e.g., `ports: ["5432:5432"]`), you will only be able to run **one** AOE session at a time for that project. 
+
+To support parallel sessions, avoid host port bindings in your primary compose files. Instead:
+- Use ephemeral ports (e.g., `ports: ["5432"]`) and let Docker assign a random host port.
+- Define port bindings only in a `docker-compose.override.yml` that you don't include in AOE's `compose_files`.
+
+#### Finding Assigned Ports
+When using ephemeral ports, you can find the host mapping for any service using the `docker compose port` command with the AOE project name:
+
+```bash
+# Find the host port for the 'db' service's internal port 5432
+# Replace <project-name> with the project ID shown in AOE (e.g., aoe-a1b2c3d4)
+docker compose -p <project-name> port db 5432
+```
+
+#### Service Dependencies
+Since the agent is just another service in the Compose stack, you can make it depend on other services by adding a `docker-compose.aoe.yml` to your project and including it in AOE's `compose_files`:
+
+```yaml
+# docker-compose.aoe.yml
+services:
+  aoe-agent:
+    depends_on:
+      - db
+      - redis
+```
+
 ### Shared Agent Config Directories
 
 AOE shares your host agent credentials with sandboxed containers so agents can authenticate without re-login. This works for all supported agents: Claude Code, OpenCode, Codex, Gemini, Vibe, and Cursor.
