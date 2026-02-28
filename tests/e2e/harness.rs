@@ -110,6 +110,7 @@ pub struct TuiTestHarness {
     _stub_dir: TempDir,
     binary_path: PathBuf,
     stub_path: PathBuf,
+    socket_path: PathBuf,
     spawned: bool,
     recording: bool,
     cast_path: Option<PathBuf>,
@@ -125,6 +126,9 @@ impl TuiTestHarness {
 
         // Unique session name to avoid collisions.
         let session_name = format!("aoe_e2e_{}_{}", test_name, std::process::id());
+
+        // Path to unique tmux socket for this test.
+        let socket_path = home_dir.path().join("tmux.sock");
 
         // Create a fake `claude` script so `which claude` succeeds.
         let stub_path = stub_dir.path().to_path_buf();
@@ -176,6 +180,7 @@ last_seen_version = "{}"
             _stub_dir: stub_dir,
             binary_path,
             stub_path,
+            socket_path,
             spawned: false,
             recording,
             cast_path: None,
@@ -222,16 +227,16 @@ last_seen_version = "{}"
         let cmd_str = self.build_tmux_command(args);
 
         let output = Command::new("tmux")
-            .args([
-                "new-session",
-                "-d",
-                "-s",
-                &self.session_name,
-                "-x",
-                "100",
-                "-y",
-                "30",
-            ])
+            .arg("-S")
+            .arg(&self.socket_path)
+            .arg("new-session")
+            .arg("-d")
+            .arg("-s")
+            .arg(&self.session_name)
+            .arg("-x")
+            .arg("100")
+            .arg("-y")
+            .arg("30")
             .arg(&cmd_str)
             .env("HOME", self.home_dir.path())
             .env("XDG_CONFIG_HOME", self.home_dir.path().join(".config"))
@@ -258,7 +263,12 @@ last_seen_version = "{}"
     pub fn send_keys(&self, keys: &str) {
         assert!(self.spawned, "must call spawn_tui() or spawn() first");
         let output = Command::new("tmux")
-            .args(["send-keys", "-t", &self.session_name, keys])
+            .arg("-S")
+            .arg(&self.socket_path)
+            .arg("send-keys")
+            .arg("-t")
+            .arg(&self.session_name)
+            .arg(keys)
             .output()
             .expect("failed to send keys");
         assert!(
@@ -275,7 +285,13 @@ last_seen_version = "{}"
     pub fn type_text(&self, text: &str) {
         assert!(self.spawned, "must call spawn_tui() or spawn() first");
         let output = Command::new("tmux")
-            .args(["send-keys", "-t", &self.session_name, "-l", text])
+            .arg("-S")
+            .arg(&self.socket_path)
+            .arg("send-keys")
+            .arg("-t")
+            .arg(&self.session_name)
+            .arg("-l")
+            .arg(text)
             .output()
             .expect("failed to type text");
         assert!(
@@ -290,7 +306,12 @@ last_seen_version = "{}"
     pub fn capture_screen(&self) -> String {
         assert!(self.spawned, "must call spawn_tui() or spawn() first");
         let output = Command::new("tmux")
-            .args(["capture-pane", "-t", &self.session_name, "-p"])
+            .arg("-S")
+            .arg(&self.socket_path)
+            .arg("capture-pane")
+            .arg("-t")
+            .arg(&self.session_name)
+            .arg("-p")
             .output()
             .expect("failed to capture pane");
         String::from_utf8_lossy(&output.stdout).to_string()
@@ -385,7 +406,11 @@ last_seen_version = "{}"
     /// Check whether the tmux session is still alive.
     pub fn session_alive(&self) -> bool {
         Command::new("tmux")
-            .args(["has-session", "-t", &self.session_name])
+            .arg("-S")
+            .arg(&self.socket_path)
+            .arg("has-session")
+            .arg("-t")
+            .arg(&self.session_name)
             .output()
             .map(|o| o.status.success())
             .unwrap_or(false)
@@ -410,7 +435,11 @@ last_seen_version = "{}"
 
     fn kill_session(&self) {
         let _ = Command::new("tmux")
-            .args(["kill-session", "-t", &self.session_name])
+            .arg("-S")
+            .arg(&self.socket_path)
+            .arg("kill-session")
+            .arg("-t")
+            .arg(&self.session_name)
             .output();
     }
 }
