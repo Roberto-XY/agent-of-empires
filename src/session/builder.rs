@@ -237,11 +237,9 @@ pub fn cleanup_instance(instance: &Instance, created_worktree: Option<&CreatedWo
 
     if let Some(sandbox) = &instance.sandbox_info {
         if sandbox.enabled {
-            let container = containers::DockerContainer::from_session_id(&instance.id);
-            if container.exists().unwrap_or(false) {
-                if let Err(e) = container.remove(true) {
-                    tracing::warn!("Failed to clean up container: {}", e);
-                }
+            let cfg = super::config::Config::load().ok().unwrap_or_default();
+            if let Err(e) = instance.cleanup_sandbox(true, &cfg) {
+                tracing::warn!("Failed to clean up sandbox: {}", e);
             }
         }
     }

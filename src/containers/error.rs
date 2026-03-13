@@ -43,6 +43,18 @@ pub enum DockerError {
     #[error("Failed to remove container: {0}")]
     RemoveFailed(String),
 
+    #[error(
+        "Docker Compose v2 is required but not available.\n\
+         Install it via Docker Desktop or the compose plugin."
+    )]
+    ComposeNotInstalled,
+
+    #[error("Failed to generate compose overlay: {0}")]
+    ComposeOverlayFailed(String),
+
+    #[error("Docker compose command failed: {0}")]
+    ComposeCommandFailed(String),
+
     #[error("Docker command failed: {0}")]
     CommandFailed(String),
 

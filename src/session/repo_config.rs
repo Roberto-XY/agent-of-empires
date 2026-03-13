@@ -11,20 +11,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
-/// Progress messages streamed from hook execution.
-#[derive(Debug, Clone)]
-pub enum HookProgress {
-    /// A new hook command is starting.
-    Started(String),
-    /// A line of stdout/stderr output from the running hook.
-    Output(String),
-}
-
 use super::config::Config;
 use super::profile_config::{
     HooksConfigOverride, ProfileConfig, SandboxConfigOverride, SessionConfigOverride,
     TmuxConfigOverride, UpdatesConfigOverride, WorktreeConfigOverride,
 };
+use super::progress::{CreationProgress, CreationProgressSource};
 
 /// Repository-level configuration loaded from `.aoe/config.toml`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -505,7 +497,7 @@ fn run_hooks_captured(commands: &[String], target: &HookTarget) -> Result<()> {
 fn run_hooks_streamed(
     commands: &[String],
     target: &HookTarget,
-    progress_tx: &mpsc::Sender<HookProgress>,
+    progress_tx: &mpsc::Sender<CreationProgress>,
 ) -> Result<()> {
     use std::io::BufRead;
 
@@ -513,7 +505,10 @@ fn run_hooks_streamed(
 
     for cmd in commands {
         tracing::info!("Running hook (streamed): {}", cmd);
-        let _ = progress_tx.send(HookProgress::Started(cmd.clone()));
+        let _ = progress_tx.send(CreationProgress::StepStarted {
+            source: CreationProgressSource::Hook,
+            label: cmd.clone(),
+        });
 
         let mut command = build_hook_command(cmd, target, true);
         let mut child = command
@@ -525,14 +520,20 @@ fn run_hooks_streamed(
         if let Some(stdout) = child.stdout.take() {
             let reader = std::io::BufReader::new(stdout);
             for line in reader.lines().map_while(Result::ok) {
-                let _ = progress_tx.send(HookProgress::Output(line));
+                let _ = progress_tx.send(CreationProgress::Output {
+                    source: CreationProgressSource::Hook,
+                    line,
+                });
             }
         }
 
         let status = child.wait()?;
         if !status.success() {
             let detail = format_hook_error(cmd, status.code(), "", "", in_container);
-            let _ = progress_tx.send(HookProgress::Output(detail.clone()));
+            let _ = progress_tx.send(CreationProgress::Output {
+                source: CreationProgressSource::Hook,
+                line: detail.clone(),
+            });
             anyhow::bail!(detail);
         }
 
@@ -565,7 +566,7 @@ pub fn execute_hooks_in_container(
 pub fn execute_hooks_streamed(
     commands: &[String],
     project_path: &Path,
-    progress_tx: &mpsc::Sender<HookProgress>,
+    progress_tx: &mpsc::Sender<CreationProgress>,
 ) -> Result<()> {
     run_hooks_streamed(commands, &HookTarget::Local { project_path }, progress_tx)
 }
@@ -575,7 +576,7 @@ pub fn execute_hooks_in_container_streamed(
     commands: &[String],
     container_name: &str,
     workdir: &str,
-    progress_tx: &mpsc::Sender<HookProgress>,
+    progress_tx: &mpsc::Sender<CreationProgress>,
 ) -> Result<()> {
     run_hooks_streamed(
         commands,
@@ -863,6 +864,64 @@ mod tests {
         );
         // Should fail because docker/container doesn't exist, but should not panic
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_repo_config_with_compose_deserialize() {
+        let toml = r#"
+            [sandbox]
+            container_runtime = "compose"
+
+            [sandbox.compose]
+            compose_files = ["docker-compose.yml", "docker-compose.dev.yml"]
+            agent_service = "my-agent"
+        "#;
+
+        let config: RepoConfig = toml::from_str(toml).unwrap();
+        let sandbox = config.sandbox.unwrap();
+        assert_eq!(
+            sandbox.container_runtime,
+            Some(super::super::config::ContainerRuntimeName::Compose)
+        );
+        let compose = sandbox.compose.unwrap();
+        assert_eq!(
+            compose.compose_files,
+            Some(vec![
+                "docker-compose.yml".to_string(),
+                "docker-compose.dev.yml".to_string()
+            ])
+        );
+        assert_eq!(compose.agent_service, Some("my-agent".to_string()));
+    }
+
+    #[test]
+    fn test_merge_repo_config_compose_override() {
+        let config = Config::default();
+        assert_eq!(
+            config.sandbox.container_runtime,
+            super::super::config::ContainerRuntimeName::Docker
+        );
+
+        let repo = RepoConfig {
+            sandbox: Some(SandboxConfigOverride {
+                container_runtime: Some(super::super::config::ContainerRuntimeName::Compose),
+                compose: Some(super::super::profile_config::ComposeConfigOverride {
+                    compose_files: Some(vec!["compose.yaml".to_string()]),
+                    agent_service: Some("aoe-agent".to_string()),
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let merged = merge_repo_config(config, &repo);
+        assert_eq!(
+            merged.sandbox.container_runtime,
+            super::super::config::ContainerRuntimeName::Compose
+        );
+        let compose = merged.sandbox.compose.unwrap();
+        assert_eq!(compose.compose_files, vec!["compose.yaml"]);
+        assert_eq!(compose.agent_service, "aoe-agent");
     }
 
     #[test]

@@ -3,8 +3,8 @@
 use anyhow::{bail, Result};
 use clap::Args;
 
-use crate::containers;
-use crate::session::{Config, GroupTree, Instance, Storage};
+use crate::containers::DockerContainer;
+use crate::session::{Config, ContainerRuntimeName, GroupTree, Instance, Storage};
 
 #[derive(Args)]
 pub struct RemoveArgs {
@@ -84,7 +84,7 @@ pub async fn run(profile: &str, args: RemoveArgs) -> Result<()> {
                     // are root-owned on the host. Delete contents from inside
                     // the container where root can remove them.
                     let sandbox_cleaned = if inst.is_sandboxed() {
-                        let container = containers::DockerContainer::from_session_id(&inst.id);
+                        let container = DockerContainer::from_session_id(&inst.id);
                         if container.exists().unwrap_or(false) {
                             if !container.is_running().unwrap_or(false) {
                                 let _ = container.start();
@@ -149,15 +149,14 @@ pub async fn run(profile: &str, args: RemoveArgs) -> Result<()> {
             // Container cleanup (if config allows and user didn't request --keep-container)
             if let Some(sandbox) = &inst.sandbox_info {
                 if sandbox.enabled && !args.keep_container {
-                    let config = Config::load().ok().unwrap_or_default();
-                    if config.sandbox.auto_cleanup {
-                        let container = containers::DockerContainer::from_session_id(&inst.id);
-                        if container.exists().unwrap_or(false) {
-                            if let Err(e) = container.remove(true) {
-                                eprintln!("Warning: failed to remove container: {}", e);
-                            } else {
-                                println!("✓ Container removed");
-                            }
+                    let cfg = Config::load().ok().unwrap_or_default();
+                    if cfg.sandbox.auto_cleanup {
+                        if let Err(e) = inst.cleanup_sandbox(true, &cfg) {
+                            eprintln!("Warning: failed to clean up sandbox: {}", e);
+                        } else if cfg.sandbox.container_runtime == ContainerRuntimeName::Compose {
+                            println!("Compose stack removed");
+                        } else {
+                            println!("Container removed");
                         }
                     } else {
                         println!(

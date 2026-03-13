@@ -258,6 +258,10 @@ impl SettingsView {
                             };
                             self.apply_field_to_config(self.selected_field);
 
+                            if self.fields[self.selected_field].key == FieldKey::ContainerRuntime {
+                                self.rebuild_fields();
+                            }
+
                             if self.fields[self.selected_field].key == FieldKey::ThemeName {
                                 if let FieldValue::Select { selected, options } =
                                     &self.fields[self.selected_field].value
@@ -645,6 +649,20 @@ impl SettingsView {
             FieldKey::ContainerRuntime => {
                 if let Some(ref mut s) = config.sandbox {
                     s.container_runtime = None;
+                }
+            }
+            FieldKey::ComposeFiles => {
+                if let Some(ref mut s) = config.sandbox {
+                    if let Some(ref mut c) = s.compose {
+                        c.compose_files = None;
+                    }
+                }
+            }
+            FieldKey::ComposeAgentService => {
+                if let Some(ref mut s) = config.sandbox {
+                    if let Some(ref mut c) = s.compose {
+                        c.agent_service = None;
+                    }
                 }
             }
             // Sound

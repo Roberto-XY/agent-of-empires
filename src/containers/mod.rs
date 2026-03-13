@@ -1,4 +1,5 @@
 mod apple_container;
+pub mod compose;
 pub mod container_interface;
 mod docker;
 pub mod error;
@@ -31,7 +32,8 @@ pub fn runtime_binary() -> &'static str {
     if let Ok(cfg) = Config::load() {
         match cfg.sandbox.container_runtime {
             ContainerRuntimeName::AppleContainer => "container",
-            ContainerRuntimeName::Docker => "docker",
+            // Compose uses Docker as the underlying engine
+            ContainerRuntimeName::Docker | ContainerRuntimeName::Compose => "docker",
         }
     } else {
         "docker"
@@ -42,7 +44,10 @@ pub fn get_container_runtime() -> ContainerRuntime {
     if let Ok(cfg) = Config::load() {
         match cfg.sandbox.container_runtime {
             ContainerRuntimeName::AppleContainer => AppleContainer::default().into(),
-            ContainerRuntimeName::Docker => Docker::default().into(),
+            // Compose uses Docker for trait-based operations (availability, image ops)
+            ContainerRuntimeName::Docker | ContainerRuntimeName::Compose => {
+                Docker::default().into()
+            }
         }
     } else {
         ContainerRuntime::default()

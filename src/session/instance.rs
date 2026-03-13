@@ -1,17 +1,38 @@
 //! Session instance definition and operations
 
 use std::path::Path;
+use std::sync::mpsc;
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::containers::compose::ComposeEngine;
 use crate::containers::{self, ContainerRuntimeInterface, DockerContainer};
+use crate::session::config::validate_compose_config;
+use crate::session::ContainerRuntimeName;
 use crate::tmux;
 
 use super::container_config;
 use super::environment::{build_docker_env_args, shell_escape};
+use super::progress::CreationProgress;
+
+/// Abstraction over Docker container and Compose engine exec commands.
+/// Both runtimes produce exec command strings; this enum dispatches transparently.
+pub enum SandboxRuntime {
+    Container(DockerContainer),
+    Compose(ComposeEngine),
+}
+
+impl SandboxRuntime {
+    pub fn exec_command(&self, options: Option<&str>, cmd: &str) -> String {
+        match self {
+            Self::Container(c) => c.exec_command(options, cmd),
+            Self::Compose(e) => format!("{} {}", e.exec_command(options), cmd),
+        }
+    }
+}
 
 fn default_true() -> bool {
     true
@@ -148,6 +169,64 @@ impl Instance {
         self.sandbox_info.as_ref().is_some_and(|s| s.enabled)
     }
 
+    /// Build a ComposeEngine for this instance if the config uses Compose runtime.
+    ///
+    /// Returns `Ok(None)` when runtime is not Compose. Returns an error if
+    /// Compose runtime is selected but the `[sandbox.compose]` config is missing.
+    fn compose_engine(&self, cfg: &super::config::Config) -> Result<Option<ComposeEngine>> {
+        if cfg.sandbox.container_runtime != ContainerRuntimeName::Compose {
+            return Ok(None);
+        }
+        let compose_config = cfg.sandbox.compose.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("Compose runtime selected but [sandbox.compose] config is missing")
+        })?;
+        let app_dir = super::get_app_dir()?;
+        Ok(Some(ComposeEngine::new(
+            &self.id,
+            std::path::Path::new(&self.project_path),
+            compose_config,
+            &app_dir,
+        )))
+    }
+
+    /// Check if the sandbox (Docker container or Compose stack) is currently running.
+    pub fn is_sandbox_running(&self, cfg: &super::config::Config) -> Result<bool> {
+        if !self.is_sandboxed() {
+            return Ok(false);
+        }
+
+        match self.compose_engine(cfg)? {
+            Some(engine) => Ok(engine.is_running()?),
+            None => {
+                let container = containers::DockerContainer::from_session_id(&self.id);
+                Ok(container.is_running()?)
+            }
+        }
+    }
+
+    /// Clean up sandbox resources (Docker container or Compose stack).
+    pub fn cleanup_sandbox(&self, remove_volumes: bool, cfg: &super::config::Config) -> Result<()> {
+        if !self.is_sandboxed() {
+            return Ok(());
+        }
+
+        match self.compose_engine(cfg)? {
+            Some(engine) => {
+                if let Err(e) = engine.down(remove_volumes, None) {
+                    tracing::warn!("compose down failed during cleanup: {}", e);
+                }
+                engine.cleanup_overlay()?;
+            }
+            None => {
+                let container = containers::DockerContainer::from_session_id(&self.id);
+                if container.exists().unwrap_or(false) {
+                    container.remove(remove_volumes)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub fn is_yolo_mode(&self) -> bool {
         self.yolo_mode
     }
@@ -241,7 +320,7 @@ impl Instance {
             anyhow::bail!("Cannot create container terminal for non-sandboxed session");
         }
 
-        let container = self.get_container_for_instance()?;
+        let runtime = self.get_container_for_instance(None)?;
         let sandbox = self.sandbox_info.as_ref().unwrap();
 
         let env_args = build_docker_env_args(sandbox);
@@ -254,7 +333,7 @@ impl Instance {
         // Get workspace path inside container (handles bare repo worktrees correctly)
         let container_workdir = self.container_workdir();
 
-        let cmd = container.exec_command(
+        let cmd = runtime.exec_command(
             Some(&format!("-w {} {}", container_workdir, env_part)),
             "/bin/bash",
         );
@@ -372,7 +451,7 @@ impl Instance {
         }
 
         let cmd = if self.is_sandboxed() {
-            let container = self.get_container_for_instance()?;
+            let runtime = self.get_container_for_instance(None)?;
             // Run on_launch hooks inside the container
             if let Some(ref hook_cmds) = on_launch_hooks {
                 if let Some(ref sandbox) = self.sandbox_info {
@@ -423,7 +502,7 @@ impl Instance {
             env_args = format!("{} -e AOE_INSTANCE_ID={}", env_args, self.id);
             let env_part = format!("{} ", env_args);
             Some(wrap_command_ignore_suspend(
-                &container.exec_command(Some(&env_part), &tool_cmd),
+                &runtime.exec_command(Some(&env_part), &tool_cmd),
             ))
         } else {
             // Run on_launch hooks on host for non-sandboxed sessions
@@ -512,24 +591,33 @@ impl Instance {
         self.apply_session_tmux_options(&name, &format!("{} (terminal)", self.title));
     }
 
-    pub fn get_container_for_instance(&mut self) -> Result<containers::DockerContainer> {
+    pub fn get_container_for_instance(
+        &mut self,
+        progress: Option<&mpsc::Sender<CreationProgress>>,
+    ) -> Result<SandboxRuntime> {
         let sandbox = self
             .sandbox_info
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Cannot ensure container for non-sandboxed session"))?;
+
+        let cfg = super::config::Config::load()?;
+
+        if cfg.sandbox.container_runtime == ContainerRuntimeName::Compose {
+            return self.ensure_compose_running(&cfg, progress);
+        }
 
         let image = &sandbox.image;
         let container = DockerContainer::new(&self.id, image);
 
         if container.is_running()? {
             container_config::refresh_agent_configs();
-            return Ok(container);
+            return Ok(SandboxRuntime::Container(container));
         }
 
         if container.exists()? {
             container_config::refresh_agent_configs();
             container.start()?;
-            return Ok(container);
+            return Ok(SandboxRuntime::Container(container));
         }
 
         // Ensure image is available (always pulls to get latest)
@@ -544,7 +632,50 @@ impl Instance {
             sandbox.created_at = Some(Utc::now());
         }
 
-        Ok(container)
+        Ok(SandboxRuntime::Container(container))
+    }
+
+    fn ensure_compose_running(
+        &mut self,
+        cfg: &super::config::Config,
+        progress: Option<&mpsc::Sender<CreationProgress>>,
+    ) -> Result<SandboxRuntime> {
+        validate_compose_config(&cfg.sandbox).map_err(|e| anyhow::anyhow!("{}", e))?;
+
+        ComposeEngine::check_compose_available()?;
+
+        let compose_config = cfg.sandbox.compose.as_ref().unwrap();
+        let app_dir = super::get_app_dir()?;
+        let engine = ComposeEngine::new(
+            &self.id,
+            std::path::Path::new(&self.project_path),
+            compose_config,
+            &app_dir,
+        );
+
+        if engine.is_running()? {
+            container_config::refresh_agent_configs();
+            return Ok(SandboxRuntime::Compose(engine));
+        }
+
+        if engine.exists()? {
+            engine.up(progress)?;
+            container_config::refresh_agent_configs();
+            return Ok(SandboxRuntime::Compose(engine));
+        }
+
+        let sandbox = self.sandbox_info.as_ref().unwrap();
+        let image = &sandbox.image;
+        let config = self.build_container_config()?;
+        engine.generate_overlay(&config, image)?;
+        // Compose pulls the image automatically during `up`; no explicit pull needed.
+        engine.up(progress)?;
+
+        if let Some(ref mut sandbox) = self.sandbox_info {
+            sandbox.created_at = Some(Utc::now());
+        }
+
+        Ok(SandboxRuntime::Compose(engine))
     }
 
     /// Get the container working directory for this instance.
@@ -592,13 +723,23 @@ impl Instance {
     /// Stop the session: kill the tmux session and stop the Docker container
     /// (if sandboxed). The container is stopped but not removed, so it can be
     /// restarted on re-attach.
-    pub fn stop(&self) -> Result<()> {
-        self.kill()?;
+    pub fn stop(&self, cfg: &super::config::Config) -> Result<()> {
+        if let Err(e) = self.kill() {
+            tracing::debug!("tmux session already gone: {}", e);
+        }
 
         if self.is_sandboxed() {
-            let container = containers::DockerContainer::from_session_id(&self.id);
-            if container.is_running().unwrap_or(false) {
-                container.stop()?;
+            match self.compose_engine(cfg)? {
+                Some(engine) => {
+                    // down without --volumes: stop but preserve data for restart
+                    engine.down(false, None)?;
+                }
+                None => {
+                    let container = containers::DockerContainer::from_session_id(&self.id);
+                    if container.is_running().unwrap_or(false) {
+                        container.stop()?;
+                    }
+                }
             }
         }
 

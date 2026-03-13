@@ -7,7 +7,8 @@ use std::sync::mpsc;
 use std::thread;
 
 use crate::session::builder::{self, CreatedWorktree, InstanceParams};
-use crate::session::repo_config::{self, HookProgress, HooksConfig};
+use crate::session::progress::{CreationProgress, CreationProgressSource};
+use crate::session::repo_config::{self, HooksConfig};
 use crate::session::Instance;
 use crate::tui::dialogs::NewSessionData;
 
@@ -49,10 +50,10 @@ impl From<&CreatedWorktree> for CreatedWorktreeInfo {
 }
 
 pub struct CreationPoller {
-    request_tx: mpsc::Sender<(CreationRequest, mpsc::Sender<HookProgress>)>,
+    request_tx: mpsc::Sender<(CreationRequest, mpsc::Sender<CreationProgress>)>,
     result_rx: mpsc::Receiver<CreationResult>,
-    progress_rx: mpsc::Receiver<HookProgress>,
-    progress_tx: mpsc::Sender<HookProgress>,
+    progress_rx: mpsc::Receiver<CreationProgress>,
+    progress_tx: mpsc::Sender<CreationProgress>,
     _handle: thread::JoinHandle<()>,
     pending: bool,
     /// Profile from the last creation request (for cross-profile saves)
@@ -62,9 +63,9 @@ pub struct CreationPoller {
 impl CreationPoller {
     pub fn new() -> Self {
         let (request_tx, request_rx) =
-            mpsc::channel::<(CreationRequest, mpsc::Sender<HookProgress>)>();
+            mpsc::channel::<(CreationRequest, mpsc::Sender<CreationProgress>)>();
         let (result_tx, result_rx) = mpsc::channel::<CreationResult>();
-        let (progress_tx, progress_rx) = mpsc::channel::<HookProgress>();
+        let (progress_tx, progress_rx) = mpsc::channel::<CreationProgress>();
 
         let handle = thread::spawn(move || {
             while let Ok((request, prog_tx)) = request_rx.recv() {
@@ -88,7 +89,7 @@ impl CreationPoller {
 
     fn create_instance(
         request: CreationRequest,
-        progress_tx: &mpsc::Sender<HookProgress>,
+        progress_tx: &mpsc::Sender<CreationProgress>,
     ) -> CreationResult {
         let data = request.data;
         let hooks = request.hooks;
@@ -134,7 +135,7 @@ impl CreationPoller {
                 // Ensure the container is running so we can exec hooks inside it.
                 // Don't create the tmux session yet -- that happens at attach time
                 // where the terminal size is available.
-                if let Err(e) = instance.get_container_for_instance() {
+                if let Err(e) = instance.get_container_for_instance(Some(progress_tx)) {
                     builder::cleanup_instance(&instance, created_worktree.as_ref());
                     return CreationResult::Error(format!("{:#}", e));
                 }
@@ -167,10 +168,13 @@ impl CreationPoller {
             let hooks = hooks.as_ref().unwrap();
             if data.sandbox {
                 if !container_started {
-                    if let Err(e) = instance.get_container_for_instance() {
+                    if let Err(e) = instance.get_container_for_instance(Some(progress_tx)) {
                         let msg = format!("Container startup warning: {:#}", e);
                         tracing::warn!("{}", msg);
-                        let _ = progress_tx.send(HookProgress::Output(msg));
+                        let _ = progress_tx.send(CreationProgress::Output {
+                            source: CreationProgressSource::System,
+                            line: msg,
+                        });
                     } else {
                         container_started = true;
                     }
@@ -201,7 +205,7 @@ impl CreationPoller {
             // Only ensure the container is running here if hooks didn't already
             // start it. Don't create the tmux session yet -- that happens at attach time
             // where the terminal size is available.
-            if let Err(e) = instance.get_container_for_instance() {
+            if let Err(e) = instance.get_container_for_instance(Some(progress_tx)) {
                 builder::cleanup_instance(&instance, created_worktree.as_ref());
                 return CreationResult::Error(format!("{:#}", e));
             }
@@ -245,7 +249,7 @@ impl CreationPoller {
         }
     }
 
-    pub fn try_recv_progress(&self) -> Option<HookProgress> {
+    pub fn try_recv_progress(&self) -> Option<CreationProgress> {
         self.progress_rx.try_recv().ok()
     }
 

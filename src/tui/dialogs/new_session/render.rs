@@ -4,6 +4,7 @@ use ratatui::prelude::*;
 use ratatui::widgets::*;
 
 use super::{NewSessionDialog, FIELD_HELP, HELP_DIALOG_WIDTH, SPINNER_FRAMES};
+use crate::session::progress::CreationProgressSource;
 use crate::tui::components::{render_text_field, render_text_field_with_ghost};
 use crate::tui::styles::Theme;
 
@@ -959,17 +960,18 @@ impl NewSessionDialog {
 
     fn render_loading(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let needs_extra_line = self.sandbox_enabled;
-        let show_hook_output = self.has_hooks;
+        let show_creation_output = self.show_creation_progress;
         let max_output_lines: usize = 6;
 
-        let dialog_width: u16 = if show_hook_output {
+        let dialog_width: u16 = if show_creation_output {
             70
         } else if needs_extra_line {
             55
         } else {
             50
         };
-        let dialog_height: u16 = if show_hook_output {
+        let dialog_height: u16 = if show_creation_output {
+            // spinner line + command line + output lines + cancel hint + padding
             (6 + max_output_lines as u16).min(area.height)
         } else if needs_extra_line {
             9
@@ -981,8 +983,12 @@ impl NewSessionDialog {
 
         frame.render_widget(Clear, dialog_area);
 
-        let title = if show_hook_output {
-            " Running Hooks "
+        let title = if show_creation_output {
+            if self.current_step_source == Some(CreationProgressSource::Compose) {
+                " Compose Engine "
+            } else {
+                " Running Hooks "
+            }
         } else {
             " Creating Session "
         };
@@ -998,21 +1004,16 @@ impl NewSessionDialog {
 
         let spinner = SPINNER_FRAMES[self.spinner_frame];
 
-        if show_hook_output {
+        if show_creation_output {
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(0), Constraint::Length(1)])
+                .split(inner);
+
             let mut lines = vec![];
 
-            let status_text = if let Some(ref cmd) = self.current_hook {
-                let max_cmd_len = (dialog_width as usize).saturating_sub(12);
-                if cmd.len() > max_cmd_len {
-                    let truncated: String =
-                        cmd.chars().take(max_cmd_len.saturating_sub(3)).collect();
-                    format!("{}...", truncated)
-                } else {
-                    cmd.clone()
-                }
-            } else {
-                "Preparing...".to_string()
-            };
+            // Status line with spinner
+            let status_text = self.current_step.as_deref().unwrap_or("Preparing...");
 
             lines.push(Line::from(vec![
                 Span::styled(
@@ -1022,36 +1023,25 @@ impl NewSessionDialog {
                 Span::styled(status_text, Style::default().fg(theme.text)),
             ]));
 
-            let output_start = self.hook_output.len().saturating_sub(max_output_lines);
-            let visible_lines = &self.hook_output[output_start..];
-            let inner_width = (dialog_width as usize).saturating_sub(6);
+            // Show last N output lines
+            let output_start = self.creation_output.len().saturating_sub(max_output_lines);
+            let visible_lines = &self.creation_output[output_start..];
 
             for line in visible_lines {
-                let truncated = if line.len() > inner_width {
-                    let t: String = line.chars().take(inner_width.saturating_sub(3)).collect();
-                    format!("{}...", t)
-                } else {
-                    line.clone()
-                };
                 lines.push(Line::from(Span::styled(
-                    format!("  {}", truncated),
+                    format!("  {}", line),
                     Style::default().fg(theme.dimmed),
                 )));
             }
 
-            let used = 1 + visible_lines.len();
-            let available = dialog_height.saturating_sub(4) as usize;
-            for _ in used..available {
-                lines.push(Line::from(""));
-            }
+            frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), chunks[0]);
 
-            lines.push(Line::from(vec![
+            let cancel_hint = Line::from(vec![
                 Span::styled(" Press ", Style::default().fg(theme.dimmed)),
                 Span::styled("Esc", Style::default().fg(theme.hint)),
                 Span::styled(" to cancel", Style::default().fg(theme.dimmed)),
-            ]));
-
-            frame.render_widget(Paragraph::new(lines), inner);
+            ]);
+            frame.render_widget(Paragraph::new(cancel_hint), chunks[1]);
         } else {
             let loading_text = if self.sandbox_enabled {
                 "Setting up sandbox..."

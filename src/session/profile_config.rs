@@ -9,7 +9,8 @@ use std::collections::HashMap;
 use std::fs;
 
 use super::config::{
-    Config, ContainerRuntimeName, DefaultTerminalMode, TmuxMouseMode, TmuxStatusBarMode,
+    ComposeConfig, Config, ContainerRuntimeName, DefaultTerminalMode, TmuxMouseMode,
+    TmuxStatusBarMode,
 };
 use super::get_profile_dir;
 
@@ -132,6 +133,18 @@ pub struct SandboxConfigOverride {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub container_runtime: Option<ContainerRuntimeName>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compose: Option<ComposeConfigOverride>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ComposeConfigOverride {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compose_files: Option<Vec<String>>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_service: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -257,6 +270,15 @@ pub fn apply_sandbox_overrides(
     }
     if let Some(container_runtime) = source.container_runtime {
         target.container_runtime = container_runtime;
+    }
+    if let Some(ref compose_override) = source.compose {
+        let compose = target.compose.get_or_insert_with(ComposeConfig::default);
+        if let Some(ref compose_files) = compose_override.compose_files {
+            compose.compose_files = compose_files.clone();
+        }
+        if let Some(ref agent_service) = compose_override.agent_service {
+            compose.agent_service = agent_service.clone();
+        }
     }
 }
 
@@ -737,5 +759,128 @@ mod tests {
         let profile = ProfileConfig::default();
         let merged = merge_configs(global, &profile);
         assert_eq!(merged.theme.name, "catppuccin-latte");
+    }
+
+    #[test]
+    fn test_merge_configs_with_compose_override() {
+        let global = Config::default();
+        assert_eq!(
+            global.sandbox.container_runtime,
+            ContainerRuntimeName::Docker
+        );
+
+        let profile = ProfileConfig {
+            sandbox: Some(SandboxConfigOverride {
+                container_runtime: Some(ContainerRuntimeName::Compose),
+                compose: Some(ComposeConfigOverride {
+                    compose_files: Some(vec![
+                        "docker-compose.yml".to_string(),
+                        "docker-compose.db.yml".to_string(),
+                    ]),
+                    agent_service: Some("my-agent".to_string()),
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let merged = merge_configs(global, &profile);
+        assert_eq!(
+            merged.sandbox.container_runtime,
+            ContainerRuntimeName::Compose
+        );
+        let compose = merged.sandbox.compose.unwrap();
+        assert_eq!(
+            compose.compose_files,
+            vec!["docker-compose.yml", "docker-compose.db.yml"]
+        );
+        assert_eq!(compose.agent_service, "my-agent");
+    }
+
+    #[test]
+    fn test_merge_configs_compose_inherits_when_not_overridden() {
+        let mut global = Config::default();
+        global.sandbox.container_runtime = ContainerRuntimeName::Compose;
+        global.sandbox.compose = Some(ComposeConfig {
+            compose_files: vec!["compose.yaml".to_string()],
+            agent_service: "aoe-agent".to_string(),
+        });
+
+        let profile = ProfileConfig {
+            sandbox: Some(SandboxConfigOverride {
+                enabled_by_default: Some(true),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let merged = merge_configs(global, &profile);
+        assert_eq!(
+            merged.sandbox.container_runtime,
+            ContainerRuntimeName::Compose,
+        );
+        let compose = merged.sandbox.compose.unwrap();
+        assert_eq!(compose.compose_files, vec!["compose.yaml"]);
+        assert_eq!(compose.agent_service, "aoe-agent");
+        assert!(merged.sandbox.enabled_by_default);
+    }
+
+    #[test]
+    fn test_merge_configs_compose_partial_override() {
+        let mut global = Config::default();
+        global.sandbox.container_runtime = ContainerRuntimeName::Compose;
+        global.sandbox.compose = Some(ComposeConfig {
+            compose_files: vec!["compose.yaml".to_string()],
+            agent_service: "original-agent".to_string(),
+        });
+
+        // Override only compose_files, not agent_service
+        let profile = ProfileConfig {
+            sandbox: Some(SandboxConfigOverride {
+                compose: Some(ComposeConfigOverride {
+                    compose_files: Some(vec!["custom-compose.yml".to_string()]),
+                    agent_service: None,
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let merged = merge_configs(global, &profile);
+        let compose = merged.sandbox.compose.unwrap();
+        assert_eq!(compose.compose_files, vec!["custom-compose.yml"]);
+        assert_eq!(compose.agent_service, "original-agent");
+    }
+
+    #[test]
+    fn test_compose_config_override_serialization() {
+        let config = ProfileConfig {
+            sandbox: Some(SandboxConfigOverride {
+                container_runtime: Some(ContainerRuntimeName::Compose),
+                compose: Some(ComposeConfigOverride {
+                    compose_files: Some(vec!["docker-compose.yml".to_string()]),
+                    agent_service: Some("my-agent".to_string()),
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let serialized = toml::to_string_pretty(&config).unwrap();
+        assert!(serialized.contains("container_runtime"));
+        assert!(serialized.contains("compose"));
+
+        let deserialized: ProfileConfig = toml::from_str(&serialized).unwrap();
+        let sandbox = deserialized.sandbox.unwrap();
+        assert_eq!(
+            sandbox.container_runtime,
+            Some(ContainerRuntimeName::Compose)
+        );
+        let compose = sandbox.compose.unwrap();
+        assert_eq!(
+            compose.compose_files,
+            Some(vec!["docker-compose.yml".to_string()])
+        );
+        assert_eq!(compose.agent_service, Some("my-agent".to_string()));
     }
 }
